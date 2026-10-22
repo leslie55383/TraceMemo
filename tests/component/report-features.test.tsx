@@ -251,6 +251,88 @@ describe('daily report controls', () => {
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
+  it('explains skipped pictures even when the hot-image filter selects none', () => {
+    render(
+      <ReportTaskStatusPanel
+        phase="requestingModel"
+        error=""
+        voiceTranscriptionProgress={null}
+        voiceTranscriptionEnabled={false}
+        preparationProgress={null}
+        imageInsightSummary={{
+          ...noImageInsights,
+          selection: {
+            inputCount: 12,
+            excludedByHotRule: 12,
+            unavailable: 0,
+            duplicates: 0,
+            excludedByLimit: 0,
+            disabled: false
+          }
+        }}
+        canRetryModelStep={false}
+        currentModel={currentModel}
+        onRetry={vi.fn()}
+        onContinueAfterImageFailures={vi.fn()}
+        onCancelAfterImageFailures={vi.fn()}
+      />
+    )
+    const coverage = screen.getByLabelText('日报图片筛选说明')
+    expect(coverage).toHaveTextContent('图片消息 12 条 · 本次选中 0 张')
+    expect(coverage).toHaveTextContent('未达热点条件 12 条；可开启普通图片补入。')
+    expect(coverage).not.toHaveTextContent('识别失败')
+  })
+
+  it('distinguishes disabled recognition from duplicate and quantity exclusions', () => {
+    const props = {
+      phase: 'success' as const,
+      error: '',
+      voiceTranscriptionProgress: null,
+      voiceTranscriptionEnabled: false,
+      preparationProgress: null,
+      canRetryModelStep: false,
+      currentModel,
+      onRetry: vi.fn(),
+      onContinueAfterImageFailures: vi.fn(),
+      onCancelAfterImageFailures: vi.fn()
+    }
+    const selection = {
+      inputCount: 12,
+      excludedByHotRule: 0,
+      unavailable: 1,
+      duplicates: 2,
+      excludedByLimit: 5,
+      disabled: false
+    }
+    const view = render(
+      <ReportTaskStatusPanel
+        {...props}
+        imageInsightSummary={{
+          ...noImageInsights,
+          total: 4,
+          succeeded: 3,
+          failed: 1,
+          selection
+        }}
+      />
+    )
+    const coverage = screen.getByLabelText('日报图片筛选说明')
+    expect(coverage).toHaveTextContent('重复图片合并 2 条')
+    expect(coverage).toHaveTextContent('缺少可用图片标识或本地资源 1 条')
+    expect(coverage).toHaveTextContent('另有 5 张未入选')
+    view.rerender(
+      <ReportTaskStatusPanel
+        {...props}
+        imageInsightSummary={{
+          ...noImageInsights,
+          selection: { ...selection, disabled: true }
+        }}
+      />
+    )
+    expect(coverage).toHaveTextContent('已关闭图片识别')
+    expect(coverage).not.toHaveTextContent('未入选')
+  })
+
   it('allows switching models and retrying only the model step', async () => {
     const user = userEvent.setup()
     const onRetry = vi.fn()

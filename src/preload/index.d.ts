@@ -56,7 +56,7 @@ import type {
 import type {
   ImageAnalysisRequest,
   ImageAnalysisResponse,
-  ImageCandidate,
+  ImageCandidateResponse,
   ImageCandidateQuery,
   ImageInsight
 } from '../shared/image-insight'
@@ -718,11 +718,9 @@ declare global {
       // ============================================================
       // AI 图片理解基础设施(ImageInsightService)
       // ============================================================
-      imageListCandidates: (query: ImageCandidateQuery) => Promise<{
-        success: boolean
-        candidates: ImageCandidate[]
-        error?: string
-      }>
+      getReportPreferences: () => Promise<import('../shared/report-preferences').ReportPreferences>
+      saveReportPreferences: (value: Partial<import('../shared/report-preferences').ReportPreferences>) => Promise<import('../shared/report-preferences').ReportPreferences>
+      imageListCandidates: (query: ImageCandidateQuery) => Promise<ImageCandidateResponse>
       imageAnalyze: (request: ImageAnalysisRequest) => Promise<ImageAnalysisResponse>
       getImageInsight: (imageHash: string) => Promise<{ success: boolean; insight?: ImageInsight }>
       listImageInsights: (

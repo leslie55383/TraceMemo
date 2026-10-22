@@ -12,6 +12,14 @@ import type { ScheduledReportExecutionStage } from '../../shared/scheduled-repor
 import type { SelectableReportTemplateId } from '../../shared/report-templates'
 import { resolveMemberName } from '../../shared/member-names'
 import {
+  normalizeReportPreferences,
+  validateReportPreferencePatch,
+  type ReportPreferences
+} from '../../shared/report-preferences'
+import type { CustomReportRange } from '../../shared/report-date-range'
+import { loadReportPreferences } from './report-preferences-service'
+import { getReportMediaRuntime, prepareReportVoiceMessages } from './report-media-runtime'
+import {
   buildGroupReportInput,
   getSummaryDateRange,
   GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT,
@@ -63,6 +71,8 @@ export function hydrateGroupMemberIdentity(
 }
 
 export interface AgentGroupReportRequest {
+  preferences?: Partial<ReportPreferences>
+  customRange?: CustomReportRange
   group: string
   range?: SummaryDateRange | 'recent24h'
   messageTypes?: ScheduledReportMessageType[]
@@ -98,6 +108,16 @@ export async function generateAgentGroupReport(
   request: AgentGroupReportRequest
 ): Promise<AgentGroupReportResult> {
   const startedAt = Date.now()
+  if (request.preferences !== undefined) {
+    const issues = validateReportPreferencePatch(request.preferences)
+    if (issues.length)
+      return reportFailure(issues.join('；'), 'precheck', 'REPORT_GENERATION_FAILED')
+  }
+  if (
+    request.range &&
+    !['today', 'yesterday', '7days', 'week', 'month', 'custom', 'recent24h'].includes(request.range)
+  )
+    return reportFailure('不支持的日报时间范围', 'data', 'REPORT_GENERATION_FAILED')
   const query = String(request.group || '')
     .trim()
     .replace(/群聊?$/, '')
@@ -109,14 +129,28 @@ export async function generateAgentGroupReport(
     return reportFailure(`“${query}”不是群聊`, 'data', 'CHAT_NOT_FOUND')
   }
 
-  const range = request.range === 'yesterday' || request.range === '7days' ? request.range : 'today'
-  const { startTime, endTime } =
-    request.range === 'recent24h'
-      ? (() => {
-          const now = Math.floor(Date.now() / 1000)
-          return { startTime: now - 86400, endTime: now }
-        })()
-      : getSummaryDateRange(range)
+  const preferences = normalizeReportPreferences({
+    ...loadReportPreferences(),
+    ...request.preferences
+  })
+  const range = request.range && request.range !== 'recent24h' ? request.range : 'today'
+  let times: { startTime: number; endTime: number }
+  try {
+    times =
+      request.range === 'recent24h'
+        ? (() => {
+            const now = Math.floor(Date.now() / 1000)
+            return { startTime: now - 86400, endTime: now }
+          })()
+        : getSummaryDateRange(range, request.customRange)
+  } catch (error) {
+    return reportFailure(
+      error instanceof Error ? error.message : String(error),
+      'data',
+      'REPORT_GENERATION_FAILED'
+    )
+  }
+  const { startTime, endTime } = times
   let messages = listMessages(contact.md5, startTime, endTime) as Message[]
   if (!messages.length) return reportFailure('所选时间范围没有可总结的消息', 'data', 'NO_MESSAGES')
 
@@ -147,7 +181,45 @@ export async function generateAgentGroupReport(
     )
   }
 
-  const input = await buildGroupReportInput(messages, contact as Contact, true, 'full')
+  let input: Awaited<ReturnType<typeof buildGroupReportInput>>
+  try {
+    messages = await prepareReportVoiceMessages(messages)
+    input = await buildGroupReportInput(
+      messages,
+      contact as Contact,
+      true,
+      preferences.density === 'concise' ? 'compact' : 'full',
+      {
+        imageApi: getReportMediaRuntime(),
+        imageLimit: preferences.imageLimit,
+        imageSelectionMode: preferences.imageSelectionMode,
+        imageMethod: preferences.imageMethod,
+        preferences,
+        visionModel: preferences.visionModel
+      }
+    )
+  } catch (error) {
+    return reportFailure(
+      error instanceof Error ? error.message : String(error),
+      'data',
+      'REPORT_GENERATION_FAILED'
+    )
+  }
+  if (input.imageInsightSummary.failed > 0)
+    return reportFailure(
+      `有 ${input.imageInsightSummary.failed} 张图片处理失败，已停止本次后台日报。请在手动日报中重试或排除失败图片。`,
+      'data',
+      'REPORT_GENERATION_FAILED'
+    )
+  if (
+    messages.every((message) => message.contentData?.type === 'image') &&
+    input.imageInsightSummary.succeeded === 0
+  )
+    return reportFailure(
+      '当前范围只有未识别的图片，请检查选图规则和识别配置',
+      'data',
+      'REPORT_GENERATION_FAILED'
+    )
   const runtime = aiProvider.getRuntimeConfig()
   const sessionId = randomUUID()
   const ai = await aiProvider.chat(
@@ -155,7 +227,12 @@ export async function generateAgentGroupReport(
       { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
       { role: 'user', content: input.prompt }
     ],
-    { sessionId, timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
+    {
+      sessionId,
+      providerId: preferences.textModel?.providerId,
+      modelId: preferences.textModel?.model,
+      timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000
+    }
   )
   if (!ai.success || !ai.data) {
     return {
@@ -183,7 +260,12 @@ export async function generateAgentGroupReport(
         { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
         { role: 'user', content: ai.data }
       ],
-      { sessionId, timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000 }
+      {
+        sessionId,
+        providerId: preferences.textModel?.providerId,
+        modelId: preferences.textModel?.model,
+        timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000
+      }
     )
     if (!repaired.success || !repaired.data) {
       const cause = parseError instanceof Error ? parseError.message : String(parseError)
@@ -224,7 +306,7 @@ export async function generateAgentGroupReport(
     messageCount: messages.length,
     reportSnapshot: report,
     reportMetadata: input.metadata,
-    modelName: runtime.modelName || runtime.model,
+    modelName: preferences.textModel?.model || runtime.modelName || runtime.model,
     tokenUsage,
     duration: Date.now() - startedAt
   }

@@ -28,6 +28,15 @@ import {
 import type { VoiceModelStatus } from '../../../shared/voice-recognition'
 import { resolveMemberName } from '../../../shared/member-names'
 import type { ReportModelChoice } from '../../../shared/ai-provider'
+import {
+  normalizeReportPreferences,
+  type ReportPreferences
+} from '../../../shared/report-preferences'
+import type { CustomReportRange } from '../../../shared/report-date-range'
+import {
+  normalizeReportImageLimit,
+  type ReportImageSelectionMode
+} from '../../../shared/image-insight'
 
 export type { VoiceTranscriptionProgress } from '../utils/voice-message-reference'
 
@@ -302,6 +311,18 @@ export function useGroupReportGeneration({
   setMemberNamePreference: (value: ReportMemberNamePreference) => void
   reportTimeoutSeconds: number
   setReportTimeoutSeconds: (value: number) => void
+  reportImageLimit: number
+  setReportImageLimit: (value: number) => void
+  reportImageSelectionMode: ReportImageSelectionMode
+  setReportImageSelectionMode: (value: ReportImageSelectionMode) => void
+  reportPreferences: ReportPreferences
+  setReportPreferences: (value: ReportPreferences) => void
+  customRange: CustomReportRange
+  setCustomRange: (value: CustomReportRange) => void
+  selectedImageIds: string[] | undefined
+  setSelectedImageIds: (ids: string[] | undefined) => void
+  retryFailedImages: () => Promise<void>
+  preferencesSaveError: string
 } {
   const [phase, setPhase] = useState<ReportGenerationPhase>('idle')
   const [error, setError] = useState('')
@@ -331,11 +352,89 @@ export function useGroupReportGeneration({
     const saved = Number(localStorage.getItem('group_report_timeout_seconds'))
     return Number.isFinite(saved) && saved >= 30 ? saved : 300
   })
+  const [reportImageLimit, setReportImageLimitState] = useState(() =>
+    normalizeReportImageLimit(localStorage.getItem('group_report_image_limit'))
+  )
+  const [reportImageSelectionMode, setReportImageSelectionModeState] =
+    useState<ReportImageSelectionMode>(() =>
+      localStorage.getItem('group_report_image_selection_mode') === 'hot-first'
+        ? 'hot-first'
+        : 'hot-only'
+    )
   const [generationMetadata, setGenerationMetadata] = useState<ReportGenerationMetadata>({
     generationLogs: []
   })
   const rangeRequestIdRef = useRef(0)
   const preparedContextRef = useRef<PreparedReportContext | null>(null)
+  const preparedMessagesRef = useRef<Message[]>([])
+  const [selectedImageIds, setSelectedImageIds] = useState<string[] | undefined>()
+  const [preferencesSaveError, setPreferencesSaveError] = useState('')
+  const [customRange, setCustomRange] = useState<CustomReportRange>({ start: '', end: '' })
+  const [extraPreferences, setExtraPreferences] = useState<ReportPreferences>(() => {
+    try {
+      return normalizeReportPreferences(
+        JSON.parse(localStorage.getItem('group_report_preferences') || '{}')
+      )
+    } catch {
+      return normalizeReportPreferences()
+    }
+  })
+  const reportPreferences = useMemo(
+    () =>
+      normalizeReportPreferences({
+        ...extraPreferences,
+        imageLimit: reportImageLimit,
+        imageSelectionMode: reportImageSelectionMode,
+        textModel:
+          modelConfig.providerId && modelConfig.model
+            ? { providerId: modelConfig.providerId, model: modelConfig.model }
+            : undefined,
+        visionModel: visionModelConfig
+          ? { providerId: visionModelConfig.providerId, model: visionModelConfig.model }
+          : undefined
+      }),
+    [
+      extraPreferences,
+      reportImageLimit,
+      reportImageSelectionMode,
+      modelConfig.providerId,
+      modelConfig.model,
+      visionModelConfig
+    ]
+  )
+  const setReportPreferences = useCallback((value: ReportPreferences): void => {
+    const next = normalizeReportPreferences(value)
+    setExtraPreferences(next)
+    localStorage.setItem('group_report_preferences', JSON.stringify(next))
+  }, [])
+  useEffect(() => {
+    let active = true
+    if (window.api?.saveReportPreferences && modelConfig.configured)
+      void window.api
+        .saveReportPreferences(reportPreferences)
+        .then(() => {
+          if (active) setPreferencesSaveError('')
+        })
+        .catch(() => {
+          if (active)
+            setPreferencesSaveError(
+              '后台日报默认配置未能保存；手动设置仍保存在当前客户端，请检查本机数据目录权限。'
+            )
+        })
+    return () => {
+      active = false
+    }
+  }, [reportPreferences, modelConfig.configured])
+  useEffect(() => {
+    setSelectedImageIds(undefined)
+  }, [
+    sourceContact?.md5,
+    summaryDateRange,
+    customRange,
+    reportImageLimit,
+    reportImageSelectionMode,
+    summaryMessageTypes
+  ])
 
   const setMemberNamePreference = useCallback((value: ReportMemberNamePreference): void => {
     localStorage.setItem('group_report_member_name_preference', value)
@@ -348,6 +447,15 @@ export function useGroupReportGeneration({
     const normalized = Math.max(30, Math.min(1800, Math.round(Number(value) || 300)))
     localStorage.setItem('group_report_timeout_seconds', String(normalized))
     setReportTimeoutSecondsState(normalized)
+  }, [])
+  const setReportImageLimit = useCallback((value: number): void => {
+    const normalized = normalizeReportImageLimit(value)
+    localStorage.setItem('group_report_image_limit', String(normalized))
+    setReportImageLimitState(normalized)
+  }, [])
+  const setReportImageSelectionMode = useCallback((value: ReportImageSelectionMode): void => {
+    localStorage.setItem('group_report_image_selection_mode', value)
+    setReportImageSelectionModeState(value)
   }, [])
 
   const isGenerating =
@@ -362,10 +470,10 @@ export function useGroupReportGeneration({
     async (markAsTaskPhase: boolean): Promise<Message[]> => {
       if (!sourceContact) return []
       const requestId = ++rangeRequestIdRef.current
-      const { startTime, endTime } = getSummaryDateRange(summaryDateRange)
       setRangeState({ status: 'loading', error: '' })
       if (markAsTaskPhase) setPhase('loadingMessages')
       try {
+        const { startTime, endTime } = getSummaryDateRange(summaryDateRange, customRange)
         const messages = await withTimeout(
           window.api.getMessages(sourceContact.md5, startTime, endTime),
           '读取聊天记录'
@@ -384,7 +492,7 @@ export function useGroupReportGeneration({
         throw loadError
       }
     },
-    [sourceContact, summaryDateRange]
+    [sourceContact, summaryDateRange, customRange]
   )
 
   useEffect(() => {
@@ -781,10 +889,22 @@ export function useGroupReportGeneration({
           messagesWithTranscripts,
           memberNamePreference
         )
-        return buildGroupReportInput(namedReportMessages, sourceContact, true, 'full', {
-          onProgress: setPreparationProgress,
-          visionModel: visionModelConfig
-        })
+        preparedMessagesRef.current = namedReportMessages
+        return buildGroupReportInput(
+          namedReportMessages,
+          sourceContact,
+          true,
+          reportPreferences.density === 'concise' ? 'compact' : 'full',
+          {
+            onProgress: setPreparationProgress,
+            visionModel: visionModelConfig,
+            imageLimit: reportImageLimit,
+            imageSelectionMode: reportImageSelectionMode,
+            imageMethod: reportPreferences.imageMethod,
+            preferences: reportPreferences,
+            selectedImageIds
+          }
+        )
       })
 
       setImageInsightSummary(input.imageInsightSummary)
@@ -812,6 +932,11 @@ export function useGroupReportGeneration({
         setPhase('awaitingImageDecision')
         return
       }
+      if (
+        preparedMessagesRef.current.every((message) => message.contentData?.type === 'image') &&
+        input.imageInsightSummary.succeeded === 0
+      )
+        throw new Error('当前范围只有未识别的图片，请开启图片识别、补入普通图片或手动选择图片')
       await runPreparedReport(context, modelConfig)
     } catch (generateError) {
       const message = errorMessage(generateError)
@@ -828,6 +953,8 @@ export function useGroupReportGeneration({
     isGenerating,
     loadRangeMessages,
     memberNamePreference,
+    reportImageLimit,
+    reportImageSelectionMode,
     modelConfig,
     runPreparedReport,
     sourceContact,
@@ -835,7 +962,50 @@ export function useGroupReportGeneration({
     summaryMessageTypes,
     templateId,
     transcribeSelectedVoiceMessages,
-    visionModelConfig
+    visionModelConfig,
+    reportPreferences,
+    selectedImageIds
+  ])
+
+  const retryFailedImages = useCallback(async (): Promise<void> => {
+    const context = preparedContextRef.current
+    if (!context || phase !== 'awaitingImageDecision' || !sourceContact) return
+    setPhase('preparingInput')
+    try {
+      const input = await buildGroupReportInput(
+        preparedMessagesRef.current,
+        sourceContact,
+        true,
+        context.input.metadata.reportMode || 'full',
+        {
+          imageLimit: reportImageLimit,
+          imageSelectionMode: reportImageSelectionMode,
+          imageMethod: reportPreferences.imageMethod,
+          preferences: reportPreferences,
+          visionModel: visionModelConfig,
+          selectedImageIds,
+          previousInsights: context.input.imageInsightSummary.items,
+          onProgress: setPreparationProgress
+        }
+      )
+      context.input = input
+      setImageInsightSummary(input.imageInsightSummary)
+      if (input.imageInsightSummary.failed > 0) setPhase('awaitingImageDecision')
+      else await runPreparedReport(context, modelConfig)
+    } catch (error) {
+      setPreparationProgress({ stage: 'summarizingInput', label: errorMessage(error) })
+      setPhase('awaitingImageDecision')
+    }
+  }, [
+    phase,
+    sourceContact,
+    reportImageLimit,
+    reportImageSelectionMode,
+    reportPreferences,
+    visionModelConfig,
+    selectedImageIds,
+    runPreparedReport,
+    modelConfig
   ])
 
   const retry = useCallback(
@@ -929,6 +1099,18 @@ export function useGroupReportGeneration({
     memberNamePreference,
     setMemberNamePreference,
     reportTimeoutSeconds,
-    setReportTimeoutSeconds
+    setReportTimeoutSeconds,
+    reportImageLimit,
+    setReportImageLimit,
+    reportImageSelectionMode,
+    setReportImageSelectionMode,
+    reportPreferences,
+    setReportPreferences,
+    customRange,
+    setCustomRange,
+    selectedImageIds,
+    setSelectedImageIds,
+    retryFailedImages,
+    preferencesSaveError
   }
 }

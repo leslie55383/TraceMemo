@@ -30,6 +30,43 @@ describe('preload IPC contract', () => {
     removeListener.mockReset()
   })
 
+  it('preserves report image selection options and diagnostic counts across IPC', async () => {
+    const api = await loadApi()
+    const query = {
+      sessionId: 'fixture-group@chatroom',
+      startTime: 1,
+      endTime: 2,
+      limit: 10,
+      selectionMode: 'hot-first' as const,
+      inputs: []
+    }
+    const response = {
+      success: true,
+      candidates: [],
+      selection: {
+        inputCount: 12,
+        excludedByHotRule: 0,
+        unavailable: 1,
+        duplicates: 2,
+        excludedByLimit: 9,
+        disabled: false
+      }
+    }
+    invoke.mockResolvedValue(response)
+    expect(await api.imageListCandidates(query)).toEqual(response)
+    expect(invoke).toHaveBeenCalledWith('image:listCandidates', query)
+  })
+
+  it('persists only report preferences through the dedicated preference channels', async () => {
+    const api = await loadApi()
+    const preferences = { imageLimit: 8, imageMethod: 'ocr-only' as const, density: 'detailed' as const }
+    invoke.mockResolvedValue(preferences)
+    expect(await api.saveReportPreferences(preferences)).toEqual(preferences)
+    expect(invoke).toHaveBeenLastCalledWith('report:savePreferences', preferences)
+    await api.getReportPreferences()
+    expect(invoke).toHaveBeenLastCalledWith('report:getPreferences')
+  })
+
   it('forwards message and media parameters to the exact main channels', async () => {
     const api = await loadApi()
     invoke.mockResolvedValue({ success: true })

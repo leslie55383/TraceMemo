@@ -6,6 +6,7 @@
  */
 
 import { normalizeGroupExitNotificationTemplate } from './group-exit-monitor'
+import { normalizeReportPreferences, type ReportPreferences } from './report-preferences'
 import {
   isSelectableReportTemplateId,
   type SelectableReportTemplateId
@@ -144,6 +145,7 @@ export interface ScheduledReportAutomationConfig {
     templateId: SelectableReportTemplateId
     memberNameMode: ScheduledReportMemberNameMode
     timeoutSeconds: number
+    preferences?: ReportPreferences
   }
   target: ScheduledReportTarget
   /**
@@ -229,7 +231,9 @@ export const SCHEDULED_REPORT_RANGE_LABELS: Record<ScheduledReportRange, string>
   today: '今日',
   yesterday: '昨日',
   '7days': '近 7 天',
-  recent24h: '最近24小时'
+  recent24h: '最近24小时',
+  week: '本周',
+  month: '本月'
 }
 
 export function scheduledReportRangeLabel(range: ScheduledReportRange): string {
@@ -280,7 +284,7 @@ export const SCHEDULED_REPORT_ALL_MESSAGE_TYPES: ScheduledReportMessageType[] = 
   'system'
 ]
 
-const SCHEDULED_REPORT_RANGES: ScheduledReportRange[] = ['today', 'yesterday', '7days', 'recent24h']
+const SCHEDULED_REPORT_RANGES: ScheduledReportRange[] = ['today', 'yesterday', '7days', 'recent24h', 'week', 'month']
 
 /** `HH:mm` 校验。 */
 export function isValidScheduleTime(value: unknown): boolean {
@@ -394,7 +398,8 @@ export function normalizeScheduledReportConfig(
         ? reportRaw.templateId
         : SCHEDULED_REPORT_DEFAULT_TEMPLATE_ID,
       memberNameMode,
-      timeoutSeconds
+      timeoutSeconds,
+      ...(reportRaw.preferences ? { preferences: normalizeReportPreferences(reportRaw.preferences) } : {})
     },
     target: {
       type: effectiveTargetType,

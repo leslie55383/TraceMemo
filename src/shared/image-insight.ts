@@ -15,6 +15,18 @@ export type ImageImportance = 'low' | 'medium' | 'high'
 /** 日报图片理解结果最多复用 10 分钟；旧记录保留在磁盘，仅不再作为缓存命中。 */
 export const IMAGE_INSIGHT_CACHE_TTL_MS = 10 * 60 * 1000
 
+export const DEFAULT_REPORT_IMAGE_LIMIT = 3
+export const MAX_REPORT_IMAGE_LIMIT = 20
+export type ReportImageSelectionMode = 'hot-only' | 'hot-first'
+
+export const normalizeReportImageLimit = (value: unknown): number => {
+  if (value === null || value === undefined || value === '') return DEFAULT_REPORT_IMAGE_LIMIT
+  const limit = Number(value)
+  return Number.isFinite(limit)
+    ? Math.min(MAX_REPORT_IMAGE_LIMIT, Math.max(0, Math.floor(limit)))
+    : DEFAULT_REPORT_IMAGE_LIMIT
+}
+
 export const isFreshImageInsight = (
   insight: Pick<ImageInsight, 'updatedAt'> | null | undefined,
   now = Date.now()
@@ -108,12 +120,32 @@ export interface ImageCandidate {
   insight?: ImageInsight
 }
 
+/** 筛选阶段的互斥计数；关闭识别时不执行资源检测或筛选。 */
+export interface ReportImageSelectionStats {
+  excludedByUser?: number
+  inputCount: number
+  excludedByHotRule: number
+  unavailable: number
+  duplicates: number
+  excludedByLimit: number
+  disabled: boolean
+}
+
+export interface ImageCandidateResponse {
+  success: boolean
+  candidates: ImageCandidate[]
+  selection?: ReportImageSelectionStats
+  error?: string
+}
+
 export interface ImageCandidateQuery {
   sessionId: string
   startTime: number
   endTime: number
-  /** 最多取 N 张,默认 3；服务端会将其限制在 0–3 */
+  /** 最多取 N 张，默认 3；服务端限制在 0–20，0 表示关闭图片识别。 */
   limit?: number
+  /** 默认仅热点；hot-first 优先热点，不足时补入普通图片。 */
+  selectionMode?: ReportImageSelectionMode
   /** 由 renderer 从已加载消息中提取的图片候选(包含热度信息) */
   inputs?: Array<{
     messageId: string
@@ -130,8 +162,8 @@ export interface ImageCandidateQuery {
 /**
  * A picture is considered hot only when it has observable follow-up activity.
  * A bare image message (or a single passive reply) is not enough to enter the
- * daily report's AI image selection. This keeps the "top 3" value an upper
- * bound rather than a quota that fills every available slot.
+ * daily report's hot-only image selection. In hot-first mode, this threshold
+ * controls priority instead of excluding ordinary images.
  */
 export const isHotImageCandidate = (input: {
   responseCount: number

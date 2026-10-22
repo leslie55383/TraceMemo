@@ -24,6 +24,7 @@ interface ReportTaskStatusPanelProps {
   onRetry: (model?: AiModelConfig) => void
   onContinueAfterImageFailures: () => void
   onCancelAfterImageFailures: () => void
+  onRetryFailedImages?: () => void
 }
 
 interface ModelChoice {
@@ -70,7 +71,8 @@ export function ReportTaskStatusPanel({
   currentModel,
   onRetry,
   onContinueAfterImageFailures,
-  onCancelAfterImageFailures
+  onCancelAfterImageFailures,
+  onRetryFailedImages
 }: ReportTaskStatusPanelProps): React.ReactElement {
   const taskSteps = voiceTranscriptionEnabled
     ? REPORT_TASK_STEPS
@@ -183,6 +185,41 @@ export function ReportTaskStatusPanel({
             ) : null}
           </div>
         )}
+      {imageInsightSummary.selection && imageInsightSummary.selection.inputCount > 0 && (
+        <div className="report-preparation-progress" aria-label="日报图片筛选说明">
+          <p>
+            图片消息 {imageInsightSummary.selection.inputCount} 条 · 本次选中{' '}
+            {imageInsightSummary.total} 张
+          </p>
+          {imageInsightSummary.selection.disabled ? (
+            <p>已关闭图片识别；图片仅按消息类型和聊天上下文参与总结。</p>
+          ) : (
+            <>
+              {(imageInsightSummary.selection.excludedByUser || 0) > 0 && (
+                <p>手动排除 {imageInsightSummary.selection.excludedByUser} 条图片消息。</p>
+              )}
+              {imageInsightSummary.selection.excludedByHotRule > 0 && (
+                <p>
+                  未达热点条件 {imageInsightSummary.selection.excludedByHotRule}{' '}
+                  条；可开启普通图片补入。
+                </p>
+              )}
+              {imageInsightSummary.selection.duplicates > 0 && (
+                <p>重复图片合并 {imageInsightSummary.selection.duplicates} 条。</p>
+              )}
+              {imageInsightSummary.selection.unavailable > 0 && (
+                <p>缺少可用图片标识或本地资源 {imageInsightSummary.selection.unavailable} 条。</p>
+              )}
+              {imageInsightSummary.selection.excludedByLimit > 0 && (
+                <p>
+                  受识别数量上限限制，另有 {imageInsightSummary.selection.excludedByLimit}{' '}
+                  张未入选。
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
       {imageInsightSummary.total > 0 && (
         <details className="report-image-insights" open={imageDecisionPending}>
           <summary>
@@ -197,6 +234,11 @@ export function ReportTaskStatusPanel({
                   <time>{item.time}</time>
                 </div>
                 <p>{item.description}</p>
+                {item.source && (
+                  <small>
+                    {item.source === 'local-ocr' ? '来源：本地 OCR，仅提取文字' : '来源：视觉模型'}
+                  </small>
+                )}
                 {item.ocrText ? <small>OCR：{item.ocrText}</small> : null}
                 {item.tags.length ? <small>标签：{item.tags.join(' / ')}</small> : null}
               </article>
@@ -224,6 +266,11 @@ export function ReportTaskStatusPanel({
             张图片仍会参与总结。失败图片只按消息类型和聊天上下文处理，不会猜测具体内容。
           </p>
           <div>
+            {onRetryFailedImages && (
+              <Button variant="outline" onClick={onRetryFailedImages}>
+                仅重试失败图片
+              </Button>
+            )}
             <Button onClick={onContinueAfterImageFailures}>继续文字总结</Button>
             <Button variant="outline" onClick={onCancelAfterImageFailures}>
               停止生成

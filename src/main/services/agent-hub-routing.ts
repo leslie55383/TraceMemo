@@ -9,7 +9,7 @@ import type { AskWechatQueryResult } from '../../shared/query-agent'
 
 export interface GroupReportIntent {
   group: string
-  range: 'today' | 'yesterday' | '7days'
+  range: 'today' | 'yesterday' | '7days' | 'week' | 'month'
 }
 
 export interface GroupMemberChatIntent {
@@ -34,15 +34,20 @@ export type InboundRoute =
  */
 export function matchGroupReportIntent(text: string): GroupReportIntent | null {
   const normalized = text.trim()
-  if (!normalized.includes('群') || !/(图片|长图|日报|报告)/.test(normalized)) return null
+  if (!normalized.includes('群') || !/(图片|长图|日报|周报|月报|报告)/.test(normalized)) return null
+  if (/(上周|上月)/.test(normalized)) return null
   const range = /(7天|七天|一周)/.test(normalized)
     ? '7days'
-    : /(昨天|昨日)/.test(normalized)
-      ? 'yesterday'
-      : 'today'
+    : /(本月|月报)/.test(normalized)
+      ? 'month'
+      : /(本周|周报)/.test(normalized)
+        ? 'week'
+        : /(昨天|昨日)/.test(normalized)
+          ? 'yesterday'
+          : 'today'
   const group = normalized
     .replace(
-      /请|帮我|生成|做一份|做个|今天的|今日的|今天|今日|昨天的|昨日的|昨天|昨日|最近7天的|最近七天的|最近7天|最近七天|近7天的|近七天的|近7天|近七天|消息|聊天记录|聊天|群聊总结|群总结|群日报|群报告|总结|日报|报告|图片|长图/g,
+      /请|帮我|生成|做一份|做个|今天的|今日的|今天|今日|昨天的|昨日的|昨天|昨日|最近7天的|最近七天的|最近7天|最近七天|近7天的|近七天的|近7天|近七天|本周的|本月的|本周|本月|周报|月报|消息|聊天记录|聊天|群聊总结|群总结|群日报|群报告|总结|日报|报告|图片|长图/g,
       ''
     )
     .replace(/[，。！？?：:]/g, '')

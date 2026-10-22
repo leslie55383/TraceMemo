@@ -28,6 +28,10 @@ import {
   type ScheduledReportTargetType
 } from './model/scheduled-report-model'
 import { LeaveNotificationTargetPicker } from './LeaveNotificationTargetPicker'
+import { ReportImageSettings } from '../../components/reports/ReportImageSettings'
+import { ReportContentSettings } from '../../components/reports/ReportContentSettings'
+import { ReportModelPreferences } from '../../components/reports/ReportModelPreferences'
+import { normalizeReportPreferences } from '../../../../shared/report-preferences'
 
 /**
  * ScheduledReportEditor —— 「自动化 → 规则 → 定时日报」的编辑器。
@@ -78,6 +82,12 @@ export function ScheduledReportEditor({
 }: ScheduledReportEditorProps): React.ReactElement {
   const [draft, setDraft] = React.useState<ScheduledReportDraft>(initialDraft)
   const [groupFilter, setGroupFilter] = React.useState('')
+  const [reportDefaults, setReportDefaults] = React.useState(() => normalizeReportPreferences())
+  React.useEffect(() => {
+    let active = true
+    if (window.api.getReportPreferences) void window.api.getReportPreferences().then(value => { if (active) setReportDefaults(value) }).catch(() => undefined)
+    return () => { active = false }
+  }, [])
 
   const patch = (next: Partial<ScheduledReportDraft>): void =>
     setDraft((current) => ({ ...current, ...next }))
@@ -336,10 +346,18 @@ export function ScheduledReportEditor({
             <div className="automation-field">
               <span className="automation-field-label">日报内容</span>
               <small>
-                与普通日报相同，固定生成今日话题、重要消息、问题与解答、实用资源、精彩对话、
-                活跃成员、活跃时间分布、关键词和内容密度。
+                默认沿用手动日报已保存的图片处理、内容密度与模块设置。可为此规则单独保存配置。
               </small>
+              <label className="flex items-center gap-2 mt-3"><Switch aria-label="为此规则单独设置日报" disabled={saving} checked={Boolean(draft.preferences)} onCheckedChange={checked => patch({ preferences: checked ? normalizeReportPreferences(reportDefaults) : undefined })} />为此规则单独设置日报</label>
             </div>
+            {draft.preferences && <>
+              <ReportImageSettings limit={draft.preferences.imageLimit} selectionMode={draft.preferences.imageSelectionMode} method={draft.preferences.imageMethod} disabled={saving}
+                onLimitChange={imageLimit => patch({ preferences: { ...draft.preferences!, imageLimit } })}
+                onSelectionModeChange={imageSelectionMode => patch({ preferences: { ...draft.preferences!, imageSelectionMode } })}
+                onMethodChange={imageMethod => patch({ preferences: { ...draft.preferences!, imageMethod } })} />
+              <ReportContentSettings value={draft.preferences} disabled={saving} onChange={preferences => patch({ preferences })} />
+              <ReportModelPreferences value={draft.preferences} disabled={saving} onChange={preferences => patch({ preferences })} />
+            </>}
 
             <div className="automation-inline-row automation-model-row">
               <div>

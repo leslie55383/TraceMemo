@@ -467,7 +467,8 @@ export class AutomationActionRunner {
         messageTypes: input.config.report.messageTypes,
         templateId: input.config.report.templateId,
         memberNameMode: input.config.report.memberNameMode,
-        timeoutSeconds: input.config.report.timeoutSeconds
+        timeoutSeconds: input.config.report.timeoutSeconds,
+        preferences: input.config.report.preferences
       })
     } catch (error) {
       generated = {

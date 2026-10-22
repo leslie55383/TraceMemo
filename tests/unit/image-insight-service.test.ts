@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   IMAGE_INSIGHT_CACHE_TTL_MS,
   isFreshImageInsight,
+  normalizeReportImageLimit,
   type ImageInsight
 } from '../../src/shared/image-insight'
 
@@ -78,6 +79,86 @@ describe('ImageInsightService hot image selection', () => {
 
     expect(result.map((item) => item.messageId)).toEqual(['b', 'd', 'a'])
     expect(result).toHaveLength(3)
+  })
+
+  it('accepts limits above three and enforces the twenty-image server limit', async () => {
+    const inputs = Array.from({ length: 25 }, (_, index) => ({
+      ...input(`fixture-${index}`, 2, 0),
+      md5: index.toString(16).padStart(32, '0')
+    }))
+    expect(
+      await imageInsightService.listTopHotImages({ ...query, limit: 10 }, inputs)
+    ).toHaveLength(10)
+    expect(
+      await imageInsightService.listTopHotImages({ ...query, limit: 100 }, inputs)
+    ).toHaveLength(20)
+    expect(await imageInsightService.listTopHotImages({ ...query, limit: 0 }, inputs)).toEqual([])
+  })
+
+  it('prioritizes hot images and fills remaining slots with ordinary images when enabled', async () => {
+    const inputs = [input('a', 0, 10), input('b', 2, 0), input('c', 0, 0)]
+    const result = await imageInsightService.listTopHotImages(
+      { ...query, selectionMode: 'hot-first' },
+      inputs
+    )
+    expect(result.map((candidate) => candidate.messageId)).toEqual(['b', 'a', 'c'])
+    expect(
+      (await imageInsightService.listTopHotImages(query, inputs)).map(
+        (candidate) => candidate.messageId
+      )
+    ).toEqual(['b'])
+  })
+
+  it('counts repeated images once and keeps their strongest discussion as the source', async () => {
+    const duplicate = { ...input('b', 3, 0), md5: 'a'.repeat(32) }
+    const result = await imageInsightService.listTopHotImages(query, [
+      input('a', 2, 0),
+      duplicate,
+      input('c', 2, 0)
+    ])
+    expect(result.map((candidate) => candidate.messageId)).toEqual(['b', 'c'])
+  })
+
+  it('accounts for every image using mutually exclusive selection reasons', async () => {
+    const result = await imageInsightService.selectReportImages({ ...query, limit: 1 }, [
+      input('a', 2, 0),
+      { ...input('b', 3, 0), md5: 'a'.repeat(32) },
+      input('c', 2, 0),
+      input('d', 0, 0),
+      { ...input('e', 2, 0), md5: '', datName: undefined }
+    ])
+    expect(result.candidates.map((candidate) => candidate.messageId)).toEqual(['b'])
+    expect(result.selection).toEqual({
+      inputCount: 5,
+      excludedByHotRule: 1,
+      unavailable: 1,
+      duplicates: 1,
+      excludedByLimit: 1,
+      disabled: false
+    })
+  })
+
+  it('reports disabled selection without looking up image caches', async () => {
+    const result = await imageInsightService.selectReportImages({ ...query, limit: 0 }, [
+      input('a', 2, 0)
+    ])
+    expect(result).toMatchObject({ candidates: [], selection: { inputCount: 1, disabled: true } })
+    expect(getByHash).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [undefined, 3],
+    [null, 3],
+    ['', 3],
+    [NaN, 3],
+    [Infinity, 3],
+    [-1, 0],
+    [0, 0],
+    [7.9, 7],
+    ['12', 12],
+    [100, 20]
+  ])('normalizes the image limit %s to %s', (value, expected) => {
+    expect(normalizeReportImageLimit(value)).toBe(expected)
   })
 
   it('returns no candidates when no image has meaningful follow-up activity', async () => {
@@ -293,5 +374,44 @@ describe('ImageInsightService cache TTL and vision routing', () => {
     expect(result).toEqual({ success: true, insight: cached, fromCache: true })
     expect(analyzeImage).not.toHaveBeenCalled()
     expect(upsert).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse another model cache when a report explicitly selects its vision model', async () => {
+    getByHash.mockReturnValue(cachedInsight(Date.now()))
+    const analyzeImage = vi.fn(async () => ({
+      success: true,
+      data: JSON.stringify({
+        description: 'fixture-selected-result',
+        tags: [],
+        category: 'photo',
+        importance: 'medium'
+      })
+    }))
+    imageInsightService.bind({
+      providerService: {
+        list: () => ({ providers: [] }),
+        getVisionRuntimeConfig: () => ({
+          configured: true,
+          providerName: 'fixture',
+          providerId: 'fixture-default',
+          model: 'fixture-default',
+          modelName: 'fixture'
+        }),
+        analyzeImage
+      },
+      decryptService: { findImageFile: () => null, decryptImageToBase64: () => null }
+    })
+    const result = await imageInsightService.analyze({
+      imageHash: 'a'.repeat(32),
+      imageDataUrl: 'data:image/png;base64,fixture',
+      messageId: 'fixture-current',
+      sender: 'fixture-member',
+      sentAt: Date.now(),
+      sessionId: 'fixture-group@chatroom',
+      providerId: 'fixture-selected',
+      modelId: 'fixture-vision'
+    })
+    expect(analyzeImage).toHaveBeenCalledTimes(1)
+    expect(result.insight).toMatchObject({ provider: 'fixture-selected', model: 'fixture-vision' })
   })
 })

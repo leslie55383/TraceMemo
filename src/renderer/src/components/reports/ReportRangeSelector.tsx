@@ -2,6 +2,8 @@ import React from 'react'
 import { SUMMARY_DATE_OPTIONS, SummaryDateRange } from '../../utils/group-report'
 import { RangeMessageState } from '../../hooks/useGroupReportGeneration'
 import { SegmentedControl, SegmentedControlItem } from '../ui'
+import { Input } from '../ui'
+import type { CustomReportRange } from '../../../../shared/report-date-range'
 
 interface ReportRangeSelectorProps {
   value: SummaryDateRange
@@ -9,6 +11,8 @@ interface ReportRangeSelectorProps {
   rangeState: RangeMessageState
   disabled: boolean
   onChange: (value: SummaryDateRange) => void
+  customRange?: CustomReportRange
+  onCustomRangeChange?: (value: CustomReportRange) => void
 }
 
 export function ReportRangeSelector({
@@ -16,7 +20,9 @@ export function ReportRangeSelector({
   messageCount,
   rangeState,
   disabled,
-  onChange
+  onChange,
+  customRange = { start: '', end: '' },
+  onCustomRangeChange
 }: ReportRangeSelectorProps): React.ReactElement {
   const countText =
     rangeState.status === 'loading'
@@ -50,12 +56,37 @@ export function ReportRangeSelector({
         <SegmentedControlItem
           className="h-auto min-h-10 flex-col gap-0 whitespace-normal px-2 py-1.5 text-center"
           value="custom"
-          disabled
-          title="当前业务尚未支持自定义开始和结束时间"
+          disabled={disabled || !onCustomRangeChange}
         >
-          自定义 <small>即将支持</small>
+          自定义
         </SegmentedControlItem>
       </SegmentedControl>
+      {value === 'custom' && onCustomRangeChange && (
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <label>
+            开始时间
+            <Input
+              aria-label="日报开始时间"
+              type="datetime-local"
+              value={customRange.start}
+              disabled={disabled}
+              onChange={(event) =>
+                onCustomRangeChange({ ...customRange, start: event.target.value })
+              }
+            />
+          </label>
+          <label>
+            结束时间
+            <Input
+              aria-label="日报结束时间"
+              type="datetime-local"
+              value={customRange.end}
+              disabled={disabled}
+              onChange={(event) => onCustomRangeChange({ ...customRange, end: event.target.value })}
+            />
+          </label>
+        </div>
+      )}
     </section>
   )
 }

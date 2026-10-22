@@ -22,6 +22,12 @@ import { Contact, Message } from '../../../shared/types'
 import { jsonrepair } from 'jsonrepair'
 import { buildGroupReportFacts } from './group-report-facts'
 import type { BuildGroupReportFactsOptions, ReportImageInsightSummary } from './group-report-facts'
+import { REPORT_SECTION_OPTIONS } from '../../../shared/report-preferences'
+import {
+  resolveReportDateRange,
+  type ReportDateRange,
+  type CustomReportRange
+} from '../../../shared/report-date-range'
 
 export const GROUP_REPORT_SYSTEM_PROMPT = `你是微信群聊日报编辑。请仅根据用户提供的聊天记录生成结构化中文日报。
 
@@ -187,6 +193,7 @@ export const buildGroupReportInput = async (
   options: BuildGroupReportFactsOptions = {}
 ): Promise<GroupReportInput> => {
   const facts = await buildGroupReportFacts(messages, contact, isGroup, reportMode, options)
+  facts.metadata.reportPreferences = options.preferences
   const desiredTopicCount =
     facts.metadata.messageCount >= 1000
       ? '建议提炼 6-8 个互不重复的主要话题'
@@ -206,6 +213,14 @@ export const buildGroupReportInput = async (
 消息数：${facts.metadata.messageCount}
 活跃人数：${facts.metadata.activeUsers}
 目标模式：${REPORT_MODE_LABEL[reportMode]}
+内容密度：${options.preferences?.density === 'detailed' ? '详细：保留关键证据、决定过程与待办上下文' : options.preferences?.density === 'concise' ? '简洁：只保留最重要结论和行动' : '标准'}
+展示模块：${
+    options.preferences
+      ? REPORT_SECTION_OPTIONS.filter((o) => options.preferences!.sections.includes(o.value))
+          .map((o) => o.label)
+          .join('、') || '仅概要'
+      : '全部'
+  }。未选择模块对应字段返回空数组，hero 概要始终生成。
 话题覆盖：${desiredTopicCount}
 完整性：仅基于当前应用已加载的记录。
 
@@ -536,7 +551,32 @@ const postProcessReport = (
   mode: ReportMode,
   metadata: GroupReportMetadata
 ): GroupDailyReport => {
-  const config = topicLimitForMessageVolume(REPORT_MODE_CONFIG[mode], metadata.messageCount)
+  const base =
+    metadata.reportPreferences?.density === 'detailed'
+      ? {
+          ...REPORT_MODE_CONFIG.full,
+          maxTopics: 12,
+          maxImportantMessages: 12,
+          maxTodos: 16,
+          maxResources: 10,
+          maxQa: 10,
+          topicSummaryLength: 280,
+          noteLength: 180
+        }
+      : metadata.reportPreferences?.density === 'concise'
+        ? {
+            ...REPORT_MODE_CONFIG.compact,
+            maxResources: 3,
+            maxQa: 3,
+            maxVoiceHighlights: 1,
+            maxBadges: 1,
+            maxStorylines: 1,
+            maxChains: 1,
+            maxReversals: 1,
+            enabledSections: REPORT_MODE_CONFIG.full.enabledSections
+          }
+        : REPORT_MODE_CONFIG[mode]
+  const config = mode === 'compact' ? base : topicLimitForMessageVolume(base, metadata.messageCount)
 
   const topicsScored = sortByScore(report.topics, (item) => scoreByHeat(item.heat))
   const topicsDeduped = dedupeItems(
@@ -794,7 +834,11 @@ export const parseGroupDailyReport = (
 ): GroupDailyReport => {
   const root = asObject(extractJson(raw))
   const topics = parseTopics(root)
-  if (!topics.length) throw new Error('AI 日报中没有有效话题')
+  if (
+    !topics.length &&
+    (!metadata.reportPreferences || metadata.reportPreferences.sections.includes('topics'))
+  )
+    throw new Error('AI 日报中没有有效话题')
   const keywords = Array.from(
     new Set([
       ...asStrings(root.keywords, 15),
@@ -846,14 +890,56 @@ export const parseGroupDailyReport = (
     media
   }
 
-  return postProcessReport(report, metadata.reportMode || 'compact', metadata)
+  const processed = postProcessReport(report, metadata.reportMode || 'compact', metadata)
+  const selected = metadata.reportPreferences?.sections
+  if (selected) {
+    const enabled = (key: ReportSectionKey): boolean => selected.includes(key)
+    if (!enabled('topics')) processed.topics = []
+    if (!enabled('importantMessages')) processed.importantMessages = []
+    if (!enabled('actions')) {
+      processed.todos = []
+      processed.unresolved = []
+      if (processed.hero) processed.hero.pendingNote = undefined
+    }
+    if (!enabled('resources')) processed.resources = []
+    if (!enabled('qa')) processed.qa = []
+    if (!enabled('moments')) processed.quotes = []
+    if (!enabled('keywords')) processed.keywords = []
+    if (!enabled('storylines')) processed.storylines = []
+    if (!enabled('reversals')) processed.reversals = []
+    if (!enabled('chains')) processed.participantChains = []
+    if (!enabled('vision')) processed.media.visionGallery = []
+    if (!enabled('voices')) processed.media.voiceHighlights = []
+    if (!enabled('badges')) processed.media.funBadges = []
+    if (!enabled('analytics'))
+      processed.analytics = {
+        topicHeat: [],
+        activeTimeline: '',
+        topSpeakers: [],
+        voiceLeaderboard: []
+      }
+    for (const [key, meta] of Object.entries(processed.sectionMeta || {})) {
+      if (key !== 'hero' && !enabled(key as ReportSectionKey)) meta.enabled = false
+    }
+    if (processed.summaryStats) {
+      processed.summaryStats.topicCount = processed.topics.length
+      processed.summaryStats.todoCount = processed.todos.length
+      processed.summaryStats.unresolvedCount = processed.unresolved.length
+      processed.summaryStats.conclusionCount =
+        processed.topics.reduce((count, topic) => count + (topic.conclusions?.length || 0), 0) +
+        processed.importantMessages.length
+      if (processed.hero)
+        processed.hero.statusLine = `形成 ${processed.summaryStats.conclusionCount} 个结论 · ${processed.todos.length} 个待办 · ${processed.unresolved.length} 个待跟进问题`
+    }
+  }
+  return processed
 }
 
 // ============================================================
 // main 分支兼容导出(SummaryDateRange / getSummaryDateRange 等)
 // 用于让 App.tsx / useGroupReportGeneration.ts 等 main 分支文件能继续编译
 // ============================================================
-export type SummaryDateRange = 'today' | 'yesterday' | '7days'
+export type SummaryDateRange = ReportDateRange
 export type SummaryMessageType =
   | 'text'
   | 'image'
@@ -866,7 +952,9 @@ export type SummaryMessageType =
 export const SUMMARY_DATE_OPTIONS: { value: SummaryDateRange; label: string }[] = [
   { value: 'today', label: '今日' },
   { value: 'yesterday', label: '昨日' },
-  { value: '7days', label: '近 7 天' }
+  { value: '7days', label: '近 7 天' },
+  { value: 'week', label: '本周' },
+  { value: 'month', label: '本月' }
 ]
 
 export const SUMMARY_TYPE_OPTIONS: {
@@ -921,33 +1009,16 @@ export const SUMMARY_TYPE_OPTIONS: {
 
 export const getSummaryDateRangeAt = (
   range: SummaryDateRange,
-  now = new Date()
+  now = new Date(),
+  custom?: CustomReportRange
 ): { startTime: number; endTime: number } => {
-  // These ranges are local calendar dates. Only the separate recent24h mode
-  // uses a rolling 24-hour window in the scheduled-report service.
-  const startOfToday = new Date(now)
-  startOfToday.setHours(0, 0, 0, 0)
-  const startOfYesterday = new Date(startOfToday)
-  startOfYesterday.setDate(startOfYesterday.getDate() - 1)
-  const startOfTodaySeconds = Math.floor(startOfToday.getTime() / 1000)
-  const endTime = Math.floor(now.getTime() / 1000)
-  if (range === 'yesterday') {
-    return {
-      startTime: Math.floor(startOfYesterday.getTime() / 1000),
-      endTime: startOfTodaySeconds - 1
-    }
-  }
-  if (range === '7days') {
-    const startOfSevenDayWindow = new Date(startOfToday)
-    startOfSevenDayWindow.setDate(startOfSevenDayWindow.getDate() - 6)
-    return { startTime: Math.floor(startOfSevenDayWindow.getTime() / 1000), endTime }
-  }
-  return { startTime: startOfTodaySeconds, endTime }
+  return resolveReportDateRange(range, now, custom)
 }
 
 export const getSummaryDateRange = (
-  range: SummaryDateRange
-): { startTime: number; endTime: number } => getSummaryDateRangeAt(range)
+  range: SummaryDateRange,
+  custom?: CustomReportRange
+): { startTime: number; endTime: number } => getSummaryDateRangeAt(range, new Date(), custom)
 
 export const isInternalName = (value?: string): boolean => {
   const text = String(value || '').trim()

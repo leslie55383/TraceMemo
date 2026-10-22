@@ -1786,12 +1786,7 @@ function App(): React.ReactElement {
         contactName: contactDisplayName(reportSourceContact),
         contactAvatar: reportSourceContact.avatar || undefined,
         source: 'manual',
-        dateRange:
-          summaryDateRange === 'yesterday'
-            ? '昨日'
-            : summaryDateRange === '7days'
-              ? '近 7 天'
-              : '今日',
+        dateRange: reportMetadata.dateRange,
         reportDate: reportMetadata.reportDate,
         messageCount: reportGeneration.reportMessages.length,
         generatedAt: new Date().toISOString(),
@@ -2045,6 +2040,7 @@ function App(): React.ReactElement {
               onOpenSettings={openSettings}
             />
             <AiReportWorkspace
+              reportOptions={reportGeneration}
               sourceContact={reportSourceContact}
               summaryDateRange={summaryDateRange}
               summaryMessageTypes={summaryMessageTypes}
@@ -2087,6 +2083,10 @@ function App(): React.ReactElement {
               onMemberNamePreferenceChange={reportGeneration.setMemberNamePreference}
               reportTimeoutSeconds={reportGeneration.reportTimeoutSeconds}
               onReportTimeoutSecondsChange={reportGeneration.setReportTimeoutSeconds}
+              reportImageLimit={reportGeneration.reportImageLimit}
+              onReportImageLimitChange={reportGeneration.setReportImageLimit}
+              reportImageSelectionMode={reportGeneration.reportImageSelectionMode}
+              onReportImageSelectionModeChange={reportGeneration.setReportImageSelectionMode}
             />
             <ReportTaskStatusPanel
               phase={reportGeneration.phase}
@@ -2102,6 +2102,7 @@ function App(): React.ReactElement {
                 void reportGeneration.continueAfterImageFailures()
               }
               onCancelAfterImageFailures={reportGeneration.cancelAfterImageFailures}
+              onRetryFailedImages={() => void reportGeneration.retryFailedImages()}
             />
           </div>
         )}

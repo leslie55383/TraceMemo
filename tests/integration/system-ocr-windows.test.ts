@@ -36,6 +36,8 @@ const expectContainsTokens = (text: string, tokens: string[]): void => {
   }
 }
 
+// 与中文桌面界面的运行方式一致：优先探测中文语言包，不可用时仍由服务回退。
+systemOcrService.bind({ locale: () => 'zh-CN' })
 const capability = await systemOcrService.getCapability()
 const onWindows = process.platform === 'win32'
 const nativeAvailable = onWindows && capability.available

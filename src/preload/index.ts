@@ -26,7 +26,7 @@ import type {
 import type {
   ImageAnalysisRequest,
   ImageAnalysisResponse,
-  ImageCandidate,
+  ImageCandidateResponse,
   ImageCandidateQuery,
   ImageInsight
 } from '../shared/image-insight'
@@ -125,6 +125,8 @@ import type {
 
 // 渲染器的自定义 API
 const api = {
+  getReportPreferences: (): Promise<import('../shared/report-preferences').ReportPreferences> => ipcRenderer.invoke('report:getPreferences'),
+  saveReportPreferences: (value: Partial<import('../shared/report-preferences').ReportPreferences>): Promise<import('../shared/report-preferences').ReportPreferences> => ipcRenderer.invoke('report:savePreferences', value),
   writeAppLog: (entry: AppLogEntry) => ipcRenderer.invoke('app-log:write', entry),
   getAppLogPath: () => ipcRenderer.invoke('app-log:getPath'),
   revealAppLog: () => ipcRenderer.invoke('app-log:reveal'),
@@ -518,13 +520,8 @@ const api = {
   // ============================================================
   // AI 图片理解基础设施(ImageInsightService)
   // ============================================================
-  imageListCandidates: (
-    query: ImageCandidateQuery
-  ): Promise<{
-    success: boolean
-    candidates: ImageCandidate[]
-    error?: string
-  }> => ipcRenderer.invoke('image:listCandidates', query),
+  imageListCandidates: (query: ImageCandidateQuery): Promise<ImageCandidateResponse> =>
+    ipcRenderer.invoke('image:listCandidates', query),
   imageAnalyze: (request: ImageAnalysisRequest): Promise<ImageAnalysisResponse> =>
     ipcRenderer.invoke('image:analyze', request),
   getImageInsight: (imageHash: string): Promise<{ success: boolean; insight?: ImageInsight }> =>

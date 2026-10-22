@@ -9,6 +9,7 @@ import {
 } from '../automation'
 import { validateGroupExitNotificationTemplate } from '../group-exit-monitor'
 import { isSelectableReportTemplateId } from '../report-templates'
+import { REPORT_SECTION_OPTIONS } from '../report-preferences'
 import {
   type ScheduledReportMemberNameMode,
   type ScheduledReportMessageType,
@@ -22,7 +23,7 @@ const RULE_TYPES: AutomationRuleType[] = ['daily_report', 'scheduled_report', 'l
 const SCOPES = ['group', 'direct', 'all'] as const
 const KEYWORD_MODES = ['contains', 'exact', 'prefix'] as const
 const ACTION_TYPES = ['replyText', 'generateReport', 'sendReportImage'] as const
-const SCHEDULE_RANGES: ScheduledReportRange[] = ['today', 'yesterday', '7days', 'recent24h']
+const SCHEDULE_RANGES: ScheduledReportRange[] = ['today', 'yesterday', '7days', 'recent24h', 'week', 'month']
 const MESSAGE_TYPES: ScheduledReportMessageType[] = [
   'text',
   'image',
@@ -247,11 +248,28 @@ function validateScheduledReport(raw: JsonRecord, issues: AgentAutomationValidat
       'messageTypes',
       'templateId',
       'memberNameMode',
-      'timeoutSeconds'
+      'timeoutSeconds', 'preferences'
     ],
     issues
   )
   if (report) {
+    if (report.preferences !== undefined) {
+      const pref = checkObject(report.preferences, 'scheduledReport.report.preferences', ['imageLimit', 'imageSelectionMode', 'imageMethod', 'density', 'sections', 'textModel', 'visionModel'], issues)
+      if (pref) {
+        checkInteger(pref.imageLimit, 'scheduledReport.report.preferences.imageLimit', issues, 0, 20)
+        checkEnum(pref.imageSelectionMode, 'scheduledReport.report.preferences.imageSelectionMode', ['hot-only', 'hot-first'], issues)
+        checkEnum(pref.imageMethod, 'scheduledReport.report.preferences.imageMethod', ['vision', 'ocr-only', 'ocr-first'], issues)
+        checkEnum(pref.density, 'scheduledReport.report.preferences.density', ['concise', 'standard', 'detailed'], issues)
+        if (pref.sections !== undefined) {
+          if (!Array.isArray(pref.sections)) addIssue(issues, 'scheduledReport.report.preferences.sections', 'invalid_type', '必须是模块数组')
+          else pref.sections.forEach((key, index) => checkEnum(key, `scheduledReport.report.preferences.sections[${index}]`, REPORT_SECTION_OPTIONS.map(o => o.value), issues, true))
+        }
+        for (const key of ['textModel', 'visionModel']) if (pref[key] !== undefined) {
+          const ref = checkObject(pref[key], `scheduledReport.report.preferences.${key}`, ['providerId', 'model'], issues)
+          if (ref) for (const field of ['providerId', 'model']) checkString(ref[field], `scheduledReport.report.preferences.${key}.${field}`, issues, { required: true, max: 300 })
+        }
+      }
+    }
     checkString(
       report.sourceConversationId,
       'scheduledReport.report.sourceConversationId',

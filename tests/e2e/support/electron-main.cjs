@@ -1104,6 +1104,9 @@ handle('db:parseMessage', (content, messageType) =>
     : { type: 'unknown', raw: String(content), messageType }
 )
 
+let reportPreferences = {}
+handle('report:getPreferences', () => reportPreferences)
+handle('report:savePreferences', value => { reportPreferences = value; return value })
 handle('ai:getRuntimeConfig', () => ({
   providerId: 'fixture-provider',
   providerName: '本地假服务',

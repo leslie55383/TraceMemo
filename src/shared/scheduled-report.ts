@@ -1,6 +1,6 @@
 import type { SelectableReportTemplateId } from './report-templates'
 
-export type ScheduledReportRange = 'today' | 'yesterday' | '7days' | 'recent24h'
+export type ScheduledReportRange = 'today' | 'yesterday' | '7days' | 'recent24h' | 'week' | 'month'
 export type ScheduledReportMessageType =
   | 'text'
   | 'image'

@@ -46,7 +46,7 @@ export class ScheduledReportApiError extends Error {
   }
 }
 
-const REPORT_RANGES = new Set<ScheduledReportRange>(['today', 'yesterday', '7days', 'recent24h'])
+const REPORT_RANGES = new Set<ScheduledReportRange>(['today', 'yesterday', '7days', 'recent24h', 'week', 'month'])
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value)

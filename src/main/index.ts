@@ -4,7 +4,11 @@ import {
   isUserDataIsolated,
   roots as appDataRoots
 } from './app-data-bootstrap'
+import './single-instance-bootstrap'
 import './preload-env'
+import { bindReportMediaRuntime, bindReportVoiceRuntime } from './services/report-media-runtime'
+import { loadReportPreferences, saveReportPreferences } from './services/report-preferences-service'
+import type { ReportPreferences } from '../shared/report-preferences'
 import {
   app,
   shell,
@@ -69,7 +73,7 @@ import { systemOcrService } from './services/system-ocr-service'
 import type {
   ImageAnalysisRequest,
   ImageAnalysisResponse,
-  ImageCandidate,
+  ImageCandidateResponse,
   ImageCandidateQuery,
   ImageInsight
 } from '../shared/image-insight'
@@ -880,6 +884,12 @@ function createWindow(): void {
 
 // Electron 初始化完成并准备创建浏览器窗口后，将调用此方法
 // 某些 API 只能在此事件发生后使用
+app.on('second-instance', () => {
+  // During initial startup, createWindow will show itself when ready.
+  // Avoid creating a second window while the first startup is still awaiting services.
+  if (app.isReady() && BrowserWindow.getAllWindows().length > 0) showMainWindow()
+})
+
 app.whenReady().then(async () => {
   if (isLegacyMigrationHelper) {
     try {
@@ -2650,116 +2660,115 @@ app.whenReady().then(async () => {
     return parseMessageContent(content, messageType)
   })
 
-  ipcMain.handle(
-    'db:getImage',
-    async (
-      _,
-      imageMd5?: string,
-      imageDatNameOrThumb?: string | boolean,
-      _sessionId?: string,
-      options?: {
-        force?: boolean
-        preferThumbnail?: boolean
-        priority?: number
-        includeData?: boolean
+  const readWechatImage = async (
+    imageMd5?: string,
+    imageDatNameOrThumb?: string | boolean,
+    _sessionId?: string,
+    options?: {
+      force?: boolean
+      preferThumbnail?: boolean
+      priority?: number
+      includeData?: boolean
+    }
+  ) => {
+    let service = imageDecryptService
+    if (!service) {
+      const { xorKey, aesKey } = getConfiguredImageKeys()
+      // Reading an already-decoded cache entry does not require the AES key.
+      // Before db:init resolves the account identity, secure storage may not
+      // expose that key yet, so keep this cache-only service local.
+      service = new ImageDecryptService(
+        xorKey,
+        aesKey,
+        chat.getChatDb()?.getWcdb4Client(),
+        loadSettings().dbRoot
+      )
+      if (aesKey) imageDecryptService = service
+    }
+
+    const imageDatName = typeof imageDatNameOrThumb === 'string' ? imageDatNameOrThumb : undefined
+    const force = options?.force === true
+    const preferThumbnail = options?.preferThumbnail === true
+    const includeData = options?.includeData === true
+    const priority = Number.isFinite(options?.priority) ? Number(options?.priority) : 0
+    const imageCacheKey = [
+      imageMd5 || '',
+      imageDatName || '',
+      force ? 'original' : preferThumbnail ? 'thumbnail' : 'auto'
+    ].join('|')
+    const mediaService = getImageMediaService()
+    const cachedImage = await service.getCachedDecodedImage(imageCacheKey, {
+      includeData: includeData || !mediaService
+    })
+    if (cachedImage && (!force || !cachedImage.isThumbnail)) {
+      return buildImageResponse(cachedImage, includeData)
+    }
+
+    return enqueueColdImageLoad(async () => {
+      // Disk cache was already checked without waiting for database startup.
+      // Only a real miss needs the initialized WCDB client and hardlink index.
+      if (dbInitInFlight) {
+        await dbInitInFlight.catch(() => undefined)
       }
-    ) => {
-      let service = imageDecryptService
-      if (!service) {
+
+      let coldService = imageDecryptService
+      if (!coldService) {
         const { xorKey, aesKey } = getConfiguredImageKeys()
-        // Reading an already-decoded cache entry does not require the AES key.
-        // Before db:init resolves the account identity, secure storage may not
-        // expose that key yet, so keep this cache-only service local.
-        service = new ImageDecryptService(
+        if (!aesKey) return { success: false, error: '未配置图片解密密钥' }
+        coldService = new ImageDecryptService(
           xorKey,
           aesKey,
           chat.getChatDb()?.getWcdb4Client(),
           loadSettings().dbRoot
         )
-        if (aesKey) imageDecryptService = service
+        imageDecryptService = coldService
       }
 
-      const imageDatName = typeof imageDatNameOrThumb === 'string' ? imageDatNameOrThumb : undefined
-      const force = options?.force === true
-      const preferThumbnail = options?.preferThumbnail === true
-      const includeData = options?.includeData === true
-      const priority = Number.isFinite(options?.priority) ? Number(options?.priority) : 0
-      const imageCacheKey = [
-        imageMd5 || '',
-        imageDatName || '',
-        force ? 'original' : preferThumbnail ? 'thumbnail' : 'auto'
-      ].join('|')
-      const mediaService = getImageMediaService()
-      const cachedImage = await service.getCachedDecodedImage(imageCacheKey, {
-        includeData: includeData || !mediaService
+      // A previous queued request may have populated the cache while this one waited.
+      const queuedMediaService = getImageMediaService()
+      const queuedCacheHit = await coldService.getCachedDecodedImage(imageCacheKey, {
+        includeData: includeData || !queuedMediaService
       })
-      if (cachedImage && (!force || !cachedImage.isThumbnail)) {
-        return buildImageResponse(cachedImage, includeData)
+      if (queuedCacheHit && (!force || !queuedCacheHit.isThumbnail)) {
+        return buildImageResponse(queuedCacheHit, includeData)
       }
 
-      return enqueueColdImageLoad(async () => {
-        // Disk cache was already checked without waiting for database startup.
-        // Only a real miss needs the initialized WCDB client and hardlink index.
-        if (dbInitInFlight) {
-          await dbInitInFlight.catch(() => undefined)
-        }
-
-        let coldService = imageDecryptService
-        if (!coldService) {
-          const { xorKey, aesKey } = getConfiguredImageKeys()
-          if (!aesKey) return { success: false, error: '未配置图片解密密钥' }
-          coldService = new ImageDecryptService(
-            xorKey,
-            aesKey,
-            chat.getChatDb()?.getWcdb4Client(),
-            loadSettings().dbRoot
-          )
-          imageDecryptService = coldService
-        }
-
-        // A previous queued request may have populated the cache while this one waited.
-        const queuedMediaService = getImageMediaService()
-        const queuedCacheHit = await coldService.getCachedDecodedImage(imageCacheKey, {
-          includeData: includeData || !queuedMediaService
-        })
-        if (queuedCacheHit && (!force || !queuedCacheHit.isThumbnail)) {
-          return buildImageResponse(queuedCacheHit, includeData)
-        }
-
-        let filePath = force
-          ? await coldService.findImageFileAsync(imageMd5, imageDatName, {
-              allowThumbnail: false,
-              sessionId: _sessionId
-            })
-          : null
-        if (!filePath) {
-          filePath = await coldService.findImageFileAsync(imageMd5, imageDatName, {
-            allowThumbnail: true,
-            preferThumbnail,
+      let filePath = force
+        ? await coldService.findImageFileAsync(imageMd5, imageDatName, {
+            allowThumbnail: false,
             sessionId: _sessionId
           })
+        : null
+      if (!filePath) {
+        filePath = await coldService.findImageFileAsync(imageMd5, imageDatName, {
+          allowThumbnail: true,
+          preferThumbnail,
+          sessionId: _sessionId
+        })
+      }
+      if (!filePath) {
+        return {
+          success: false,
+          error: force ? '未找到原图或缩略图文件' : '未找到图片文件'
         }
-        if (!filePath) {
-          return {
-            success: false,
-            error: force ? '未找到原图或缩略图文件' : '未找到图片文件'
-          }
-        }
+      }
 
-        const decrypted = await coldService.decryptImageToBase64WithFallbackAsync(filePath, true)
-        if (!decrypted) {
-          return { success: false, error: '图片解密失败' }
-        }
+      const decrypted = await coldService.decryptImageToBase64WithFallbackAsync(filePath, true)
+      if (!decrypted) {
+        return { success: false, error: '图片解密失败' }
+      }
 
-        const decodedImage: DecodedImage = {
-          data: decrypted.data,
-          filePath: decrypted.filePath,
-          isThumbnail: coldService.isThumbnailFile(decrypted.filePath)
-        }
-        await coldService.cacheDecodedImage(imageCacheKey, decodedImage)
-        return buildImageResponse(decodedImage, includeData)
-      }, priority)
-    }
+      const decodedImage: DecodedImage = {
+        data: decrypted.data,
+        filePath: decrypted.filePath,
+        isThumbnail: coldService.isThumbnailFile(decrypted.filePath)
+      }
+      await coldService.cacheDecodedImage(imageCacheKey, decodedImage)
+      return buildImageResponse(decodedImage, includeData)
+    }, priority)
+  }
+  ipcMain.handle('db:getImage', (_, ...args: Parameters<typeof readWechatImage>) =>
+    readWechatImage(...args)
   )
 
   // ============================================================
@@ -2773,11 +2782,34 @@ app.whenReady().then(async () => {
     providerService: aiProviderService,
     decryptService: {
       findImageFile: (md5, datName, opts) =>
-        imageDecryptService?.findImageFile(md5, datName, opts) ?? null,
+        ensureImageDecryptService()?.findImageFile(md5, datName, opts) ?? null,
       decryptImageToBase64: (filePath) =>
         imageDecryptService?.decryptImageToBase64(filePath) ?? null
     }
   })
+
+  bindReportMediaRuntime({
+    imageListCandidates: async (query) => ({
+      success: true,
+      ...(await imageInsightService.selectReportImages(query, query.inputs))
+    }),
+    imageAnalyze: (request) => imageInsightService.analyze(request),
+    recognizeLocalImageText: (request) => systemOcrService.recognize(request),
+    getImage: readWechatImage
+  })
+  if (voiceRecognition) {
+    const recognition = voiceRecognition
+    bindReportVoiceRuntime({
+      getModelStatus: () => recognition.getModelStatus(),
+      getCachedTranscript: async (reference) => recognition.getTranscriptSnapshot(reference),
+      recognize: (reference) => recognition.recognize(reference),
+      onProgress: () => undefined
+    })
+  }
+  ipcMain.handle('report:getPreferences', () => loadReportPreferences())
+  ipcMain.handle('report:savePreferences', (_, value: Partial<ReportPreferences>) =>
+    saveReportPreferences(value)
+  )
 
   // System OCR 是独立的本地 Runtime（不是 AI Provider）：只注入项目统一的 ffmpeg
   // 解析逻辑（GIF/BMP/WebP/TIFF → PNG 归一化）和系统 locale（OCR 语言包探测）。
@@ -2792,14 +2824,13 @@ app.whenReady().then(async () => {
     async (
       _,
       query: ImageCandidateQuery
-    ): Promise<{ success: boolean; candidates: ImageCandidate[]; error?: string }> => {
-      console.log('[IPC] image:listCandidates query=%j', query)
+    ): Promise<ImageCandidateResponse> => {
       try {
-        const inputs = (query as ImageCandidateQuery & { inputs?: unknown[] }).inputs || []
+        const inputs = query.inputs || []
         console.log('[IPC] image:listCandidates received %d inputs', inputs.length)
-        const candidates = await imageInsightService.listTopHotImages(query, inputs as never)
+        const { candidates, selection } = await imageInsightService.selectReportImages(query, inputs)
         console.log('[IPC] image:listCandidates returned %d candidates', candidates.length)
-        return { success: true, candidates }
+        return { success: true, candidates, selection }
       } catch (error) {
         console.warn('[IPC] image:listCandidates failed:', error)
         return {
@@ -2816,17 +2847,7 @@ app.whenReady().then(async () => {
     'image:analyze',
     async (_, request: ImageAnalysisRequest): Promise<ImageAnalysisResponse> => {
       console.log('[IPC] image:analyze hash=%s messageId=%s', request.imageHash, request.messageId)
-      // 校验 provider 是否支持 vision
-      const runtime = aiProviderService.getRuntimeConfig()
-      if (!runtime.configured) {
-        return { success: false, error: '尚未配置 AI Provider' }
-      }
-      const list = aiProviderService.list()
-      const provider = list.providers.find((p) => p.id === runtime.providerId)
-      const model = provider?.models.find((m) => m.id === runtime.model)
-      if (!provider || !model) {
-        return { success: false, error: '当前 AI 模型不存在' }
-      }
+      // 日报可局部选择不同的视觉模型，由统一服务校验实际请求的 Provider。
       // Capability metadata is stored per machine. A model verified on macOS
       // may still be unmarked on Windows, so do not reject before making the
       // real multimodal request. The provider response remains authoritative.

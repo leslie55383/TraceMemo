@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { Contact } from '../../../../shared/types'
 import type { ReportModelChoice } from '../../../../shared/ai-provider'
+import type { ReportImageSelectionMode } from '../../../../shared/image-insight'
 import {
   AiModelConfig,
   RangeMessageState,
@@ -11,6 +12,7 @@ import {
 import { SummaryDateRange, SummaryMessageType } from '../../utils/group-report'
 import { MessageTypeSelector } from './MessageTypeSelector'
 import { ModelSummary } from './ModelSummary'
+import { ReportImageSettings } from './ReportImageSettings'
 import { ReportDensitySelector } from './ReportDensitySelector'
 import { ReportRangeSelector } from './ReportRangeSelector'
 import { ReportMemberNameSelector } from './ReportMemberNameSelector'
@@ -18,8 +20,23 @@ import { ReportGroupMemberSelector } from './ReportGroupMemberSelector'
 import { ReportSectionSelector } from './ReportSectionSelector'
 import { ReportTemplateSelector, ReportTemplateSelectionId } from './ReportTemplateSelector'
 import { Button, Input } from '../ui'
+import { ReportContentSettings } from './ReportContentSettings'
+import { ReportImagePicker } from './ReportImagePicker'
+import type { useGroupReportGeneration } from '../../hooks/useGroupReportGeneration'
+import { reportRangeLabel } from '../../../../shared/report-date-range'
 
 interface AiReportWorkspaceProps {
+  reportOptions?: Pick<
+    ReturnType<typeof useGroupReportGeneration>,
+    | 'reportPreferences'
+    | 'setReportPreferences'
+    | 'customRange'
+    | 'setCustomRange'
+    | 'selectedImageIds'
+    | 'setSelectedImageIds'
+    | 'reportMessages'
+    | 'preferencesSaveError'
+  >
   sourceContact: Contact | null
   summaryDateRange: SummaryDateRange
   summaryMessageTypes: SummaryMessageType[]
@@ -53,12 +70,16 @@ interface AiReportWorkspaceProps {
   onMemberNamePreferenceChange: (value: ReportMemberNamePreference) => void
   reportTimeoutSeconds: number
   onReportTimeoutSecondsChange: (value: number) => void
+  reportImageLimit: number
+  onReportImageLimitChange: (value: number) => void
+  reportImageSelectionMode: ReportImageSelectionMode
+  onReportImageSelectionModeChange: (value: ReportImageSelectionMode) => void
 }
 
 const rangeLabel = (range: SummaryDateRange): string => {
   if (range === 'yesterday') return '昨日'
   if (range === '7days') return '近 7 天'
-  return '今日'
+  return reportRangeLabel(range)
 }
 
 const modelLabel = (model: string): string => {
@@ -72,6 +93,7 @@ const modelLabel = (model: string): string => {
 }
 
 export function AiReportWorkspace({
+  reportOptions,
   sourceContact,
   summaryDateRange,
   summaryMessageTypes,
@@ -104,7 +126,11 @@ export function AiReportWorkspace({
   memberNamePreference,
   onMemberNamePreferenceChange,
   reportTimeoutSeconds,
-  onReportTimeoutSecondsChange
+  onReportTimeoutSecondsChange,
+  reportImageLimit,
+  onReportImageLimitChange,
+  reportImageSelectionMode,
+  onReportImageSelectionModeChange
 }: AiReportWorkspaceProps): React.ReactElement {
   const [actionStatus, setActionStatus] = useState('')
   const groupName = sourceContact?.m_nsNickName || sourceContact?.m_nsUsrName || '未选择群聊'
@@ -163,6 +189,8 @@ export function AiReportWorkspace({
           rangeState={rangeState}
           disabled={configDisabled}
           onChange={onSummaryDateRangeChange}
+          customRange={reportOptions?.customRange}
+          onCustomRangeChange={reportOptions?.setCustomRange}
         />
         <MessageTypeSelector
           value={summaryMessageTypes}
@@ -170,8 +198,21 @@ export function AiReportWorkspace({
           disabled={configDisabled}
           onChange={onSummaryMessageTypesChange}
         />
-        <ReportSectionSelector />
-        <ReportDensitySelector />
+        {reportOptions?.preferencesSaveError && (
+          <p role="alert">{reportOptions.preferencesSaveError}</p>
+        )}
+        {reportOptions ? (
+          <ReportContentSettings
+            value={reportOptions.reportPreferences}
+            onChange={reportOptions.setReportPreferences}
+            disabled={configDisabled}
+          />
+        ) : (
+          <>
+            <ReportSectionSelector />
+            <ReportDensitySelector />
+          </>
+        )}
         <ReportTemplateSelector
           value={templateId}
           onChange={onTemplateIdChange}
@@ -193,6 +234,34 @@ export function AiReportWorkspace({
           onVisionModelChange={onVisionModelChange}
           onOpenSettings={onOpenModelSettings}
         />
+        <ReportImageSettings
+          limit={reportImageLimit}
+          selectionMode={reportImageSelectionMode}
+          disabled={configDisabled}
+          onLimitChange={onReportImageLimitChange}
+          onSelectionModeChange={onReportImageSelectionModeChange}
+          method={reportOptions?.reportPreferences.imageMethod}
+          onMethodChange={
+            reportOptions
+              ? (imageMethod) =>
+                  reportOptions.setReportPreferences({
+                    ...reportOptions.reportPreferences,
+                    imageMethod
+                  })
+              : undefined
+          }
+        />
+        {reportOptions && (
+          <ReportImagePicker
+            messages={reportOptions.reportMessages}
+            contact={sourceContact}
+            limit={reportImageLimit}
+            mode={reportImageSelectionMode}
+            value={reportOptions.selectedImageIds}
+            onChange={reportOptions.setSelectedImageIds}
+            disabled={configDisabled}
+          />
+        )}
         <section className="report-config-section report-timeout-section">
           <div>
             <h3>日报生成超时</h3>

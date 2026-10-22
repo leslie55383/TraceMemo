@@ -816,6 +816,7 @@ export class ScheduledReportService {
       ...current,
       schedule: { time: scheduleTime },
       report: {
+        ...current.report,
         sourceConversationId: String(input.group ?? current.report.sourceConversationId).trim(),
         range: input.reportRange ?? current.report.range,
         messageTypes: input.messageTypes ?? current.report.messageTypes,

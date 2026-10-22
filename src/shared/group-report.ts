@@ -193,6 +193,7 @@ export interface ReportMediaGalleryItem {
  * description 是 AI 真实识别的结果(非基于上下文的推断)。
  */
 export interface ReportVisionGalleryItem {
+  source?: 'local-ocr' | 'vision'
   messageId: string
   imageHash: string
   sender: string
@@ -338,6 +339,7 @@ export interface GroupReportMetadata {
   heroParticipants: string[]
   avatars: Record<string, string | undefined>
   reportMode?: ReportMode
+  reportPreferences?: import('./report-preferences').ReportPreferences
   talker?: string
   timeRange?: string
   warnings?: string[]

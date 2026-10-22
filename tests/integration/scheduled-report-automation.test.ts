@@ -1,5 +1,6 @@
 import fs from 'fs-extra'
 import path from 'path'
+import { normalizeReportPreferences } from '../../src/shared/report-preferences'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const root = vi.hoisted(() => {
@@ -277,6 +278,19 @@ function isolatedRoot(): void {
 }
 
 describe('scheduled report end-to-end chain', () => {
+  it('forwards the saved rule preferences through the scheduler action chain', async () => {
+    const requests: unknown[] = []
+    const chain = buildChain({ generate: async (...args: unknown[]) => {
+      requests.push(args[0])
+      return { success: false, error: 'fixture-stop-before-send' }
+    } })
+    const rule = chain.store.getRule(chain.ruleId) as AutomationRule
+    const preferences = normalizeReportPreferences({ imageLimit: 8, imageMethod: 'ocr-only', density: 'detailed' })
+    chain.store.updateRule(chain.ruleId, { ...rule, scheduledReport: { ...rule.scheduledReport!, report: { ...rule.scheduledReport!.report, preferences } } })
+    await chain.service.executeScheduledRule(chain.ruleId, { trigger: 'manual' })
+    expect(requests[0]).toMatchObject({ preferences })
+    expect(chain.sends).toHaveLength(0)
+  })
   beforeEach(() => {
     fs.removeSync(path.join(root, 'automation'))
     fs.removeSync(path.join(root, 'actions'))

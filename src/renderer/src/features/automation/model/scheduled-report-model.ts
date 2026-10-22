@@ -31,6 +31,7 @@ import {
   type ScheduledReportTargetType
 } from '../../../../../shared/automation'
 import { type SummaryMessageType } from '../../../utils/group-report'
+import type { ReportPreferences } from '../../../../../shared/report-preferences'
 
 /**
  * 定时日报编辑器的**真实模型**（唯一一份）。
@@ -55,6 +56,7 @@ import { type SummaryMessageType } from '../../../utils/group-report'
  * 摊平只是为了表单好用。
  */
 export interface ScheduledReportDraft {
+  preferences?: ReportPreferences
   name: string
   enabled: boolean
   /** 每天的执行时间 `HH:mm`。 */
@@ -92,7 +94,7 @@ export const SCHEDULED_REPORT_DEFAULT_MESSAGE_TYPES: SummaryMessageType[] = ['te
 export const SCHEDULED_REPORT_RANGE_OPTIONS: ReadonlyArray<{
   value: ScheduledReportRange
   label: string
-}> = (['today', 'yesterday', '7days', 'recent24h'] as ScheduledReportRange[]).map((value) => ({
+}> = (['today', 'yesterday', '7days', 'recent24h', 'week', 'month'] as ScheduledReportRange[]).map((value) => ({
   value,
   label: SCHEDULED_REPORT_RANGE_LABELS[value]
 }))
@@ -181,6 +183,7 @@ export function createDraftFromRule(rule: AutomationRule): ScheduledReportDraft 
       : [...SCHEDULED_REPORT_DEFAULT_MESSAGE_TYPES],
     memberNameMode: config.report.memberNameMode,
     timeoutSeconds: config.report.timeoutSeconds,
+    preferences: config.report.preferences,
     templateId: config.report.templateId,
     targetType: config.target.type,
     targetContactId: config.target.contactId ?? '',
@@ -225,7 +228,8 @@ export function draftToAutomationRuleDraft(draft: ScheduledReportDraft): Automat
         messageTypes: draft.messageTypes as ScheduledReportMessageType[],
         templateId: draft.templateId,
         memberNameMode: draft.memberNameMode,
-        timeoutSeconds: draft.timeoutSeconds
+        timeoutSeconds: draft.timeoutSeconds,
+        preferences: draft.preferences
       },
       target: {
         type: draft.targetType,

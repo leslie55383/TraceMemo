@@ -5,7 +5,7 @@
 // 1. base64 不走 IPC,只在 main 内部流转(renderer 只看到 ImageInsight 结构化结果)
 // 2. 同图(imageHash)在 10 分钟内走缓存,过期后重新调 AI
 // 3. 失败不抛,日志记录 + 返回原状(不阻塞日报)
-// 4. 日报最多识别 3 张达到热点门槛的图片；缓存命中即返回,未命中并发调 AI
+// 4. 日报图片识别上限可配置（默认 3，最多 20），支持仅热点或热点优先补足。
 
 import crypto from 'crypto'
 import { randomUUID } from 'crypto'
@@ -20,12 +20,14 @@ import type {
   ImageAnalysisResponse,
   ImageCandidate,
   ImageCandidateQuery,
-  ImageInsight
+  ImageInsight,
+  ReportImageSelectionStats
 } from '../../shared/image-insight'
 import {
   calculateImageHeatScore,
   isFreshImageInsight,
-  isHotImageCandidate
+  isHotImageCandidate,
+  normalizeReportImageLimit
 } from '../../shared/image-insight'
 import type { SystemOcrCapability, SystemOcrRequest, SystemOcrResult } from '../../shared/system-ocr'
 import { systemOcrService } from './system-ocr-service'
@@ -161,7 +163,11 @@ class ImageInsightService {
     try {
       if (!request.force) {
         const cached = imageInsightsStore.getByHash(request.imageHash)
-        if (isFreshImageInsight(cached)) {
+        if (
+          isFreshImageInsight(cached) &&
+          (!request.providerId ||
+            (cached?.provider === request.providerId && cached?.model === request.modelId))
+        ) {
           return { success: true, insight: cached || undefined, fromCache: true }
         }
         if (cached) {
@@ -218,8 +224,8 @@ class ImageInsightService {
         this.runtimeModelId
       )
       const result = await this.providerService.analyzeImage(messages, {
-        providerId: this.runtimeProviderId,
-        modelId: this.runtimeModelId
+        providerId: runtime.providerId,
+        modelId: runtime.model
       })
       if (!result.success || !result.data) {
         console.warn('[ImageInsightService] analyze vision failed: %s', result.error || 'no data')
@@ -239,8 +245,8 @@ class ImageInsightService {
         tags: parsed.tags,
         category: parsed.category,
         importance: parsed.importance,
-        provider: this.runtimeProviderId || '',
-        model: this.runtimeModelId || '',
+        provider: runtime.providerId || '',
+        model: runtime.model || '',
         createdAt: Date.now(),
         updatedAt: Date.now(),
         sender: request.sender,
@@ -266,26 +272,40 @@ class ImageInsightService {
     query: ImageCandidateQuery,
     inputs: ImageCandidateInput[] = []
   ): Promise<ImageCandidate[]> {
-    const limit = Math.min(3, Math.max(0, query.limit ?? 3))
-    const candidates: ImageCandidate[] = []
+    return (await this.selectReportImages(query, inputs)).candidates
+  }
+
+  async selectReportImages(
+    query: ImageCandidateQuery,
+    inputs: ImageCandidateInput[] = []
+  ): Promise<{ candidates: ImageCandidate[]; selection: ReportImageSelectionStats }> {
+    const limit = normalizeReportImageLimit(query.limit)
+    const selection: ReportImageSelectionStats = {
+      inputCount: inputs.length,
+      excludedByHotRule: 0,
+      unavailable: 0,
+      duplicates: 0,
+      excludedByLimit: 0,
+      disabled: limit === 0
+    }
+    if (limit === 0) return { candidates: [], selection }
+    const candidates: Array<{ candidate: ImageCandidate; hot: boolean }> = []
+    const seenHashes = new Set<string>()
     console.log('[ImageInsightService] listTopHotImages received %d inputs', inputs.length)
     for (const input of inputs) {
+      const hot = isHotImageCandidate(input)
+      if (!hot && query.selectionMode !== 'hot-first') {
+        selection.excludedByHotRule += 1
+        continue
+      }
       const hash = await this.computeImageHash(input.md5, input.datName)
       if (!hash) {
+        selection.unavailable += 1
         console.log(
           '[ImageInsightService] skip %s: hash empty (md5=%s datName=%s)',
           input.messageId,
           input.md5,
           input.datName
-        )
-        continue
-      }
-      if (!isHotImageCandidate(input)) {
-        console.log(
-          '[ImageInsightService] skip %s: not hot (responses=%d interactions=%d)',
-          input.messageId,
-          input.responseCount,
-          input.interactionCount
         )
         continue
       }
@@ -302,10 +322,24 @@ class ImageInsightService {
       }
       const cached = imageInsightsStore.getByHash(hash)
       if (isFreshImageInsight(cached) && cached) candidate.insight = cached
-      candidates.push(candidate)
+      candidates.push({ candidate, hot })
     }
-    candidates.sort((a, b) => b.heatScore - a.heatScore)
-    return candidates.slice(0, limit)
+    candidates.sort(
+      (a, b) => Number(b.hot) - Number(a.hot) || b.candidate.heatScore - a.candidate.heatScore
+    )
+    const uniqueCandidates = candidates.filter(({ candidate }) => {
+      if (seenHashes.has(candidate.imageHash)) {
+        selection.duplicates += 1
+        return false
+      }
+      seenHashes.add(candidate.imageHash)
+      return true
+    })
+    selection.excludedByLimit = Math.max(0, uniqueCandidates.length - limit)
+    return {
+      candidates: uniqueCandidates.slice(0, limit).map(({ candidate }) => candidate),
+      selection
+    }
   }
 
   /**

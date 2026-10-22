@@ -13,7 +13,7 @@ import {
 } from './services/chat-service'
 import { exportGroupReport } from './group-report-service'
 import { GroupReportExportRequest } from '../shared/group-report'
-import { generateAgentGroupReport } from './services/agent-group-report-service'
+import { generateAgentGroupReport, type AgentGroupReportRequest } from './services/agent-group-report-service'
 import { scheduledReportService } from './services/scheduled-report-service'
 import { personalWechatCapabilityService } from './services/personal-wechat-capability-service'
 import {
@@ -519,7 +519,7 @@ const routes: Record<string, RouteHandler> = {
   '/api/v1/agent/group-report': withMethods(['POST'], async ({ req, res, body }) => {
     if (req.method !== 'POST') return sendError(res, 405, '需要 POST 请求')
     if (!isReady()) return sendError(res, 503, 'TraceMemo 数据库未初始化')
-    let request: { group?: string; range?: 'today' | 'yesterday' | '7days' }
+    let request: AgentGroupReportRequest
     try {
       request = JSON.parse(typeof body === 'string' ? body : '{}')
     } catch {
@@ -527,7 +527,13 @@ const routes: Record<string, RouteHandler> = {
     }
     const result = await generateAgentGroupReport({
       group: request.group || '',
-      range: request.range
+      range: request.range,
+      customRange: request.customRange,
+      preferences: request.preferences,
+      messageTypes: request.messageTypes,
+      memberNameMode: request.memberNameMode,
+      timeoutSeconds: request.timeoutSeconds,
+      templateId: request.templateId
     })
     sendJson(res, result.success ? 200 : 400, result)
   }),

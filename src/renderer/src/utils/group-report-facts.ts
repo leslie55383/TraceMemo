@@ -13,10 +13,20 @@ import type {
   ImageAnalysisRequest,
   ImageAnalysisResponse,
   ImageCandidate,
-  ImageCandidateQuery
+  ImageCandidateQuery,
+  ImageCandidateResponse,
+  ImageInsight,
+  ReportImageSelectionStats,
+  ReportImageSelectionMode
 } from '../../../shared/image-insight'
-import { calculateImageHeatScore, isHotImageCandidate } from '../../../shared/image-insight'
+import {
+  calculateImageHeatScore,
+  isHotImageCandidate,
+  normalizeReportImageLimit
+} from '../../../shared/image-insight'
 import type { ReportModelChoice } from '../../../shared/ai-provider'
+import type { ReportImageMethod, ReportPreferences } from '../../../shared/report-preferences'
+import type { SystemOcrRequest, SystemOcrResult } from '../../../shared/system-ocr'
 
 interface ReportImageReadResult {
   success: boolean
@@ -24,22 +34,19 @@ interface ReportImageReadResult {
   error?: string
 }
 
-declare const window: {
-  api: {
-    imageListCandidates: (query: ImageCandidateQuery) => Promise<{
-      success: boolean
-      candidates: ImageCandidate[]
-      error?: string
-    }>
-    imageAnalyze: (request: ImageAnalysisRequest) => Promise<ImageAnalysisResponse>
-    getImage: (
-      imageMd5?: string,
-      imageDatNameOrThumb?: string | boolean,
-      sessionId?: string,
-      options?: { includeData?: boolean }
-    ) => Promise<ReportImageReadResult>
-  }
+export interface ReportMediaApi {
+  imageListCandidates: (query: ImageCandidateQuery) => Promise<ImageCandidateResponse>
+  imageAnalyze: (request: ImageAnalysisRequest) => Promise<ImageAnalysisResponse>
+  getImage: (
+    imageMd5?: string,
+    imageDatNameOrThumb?: string | boolean,
+    sessionId?: string,
+    options?: { includeData?: boolean }
+  ) => Promise<ReportImageReadResult>
+  recognizeLocalImageText?: (request: SystemOcrRequest) => Promise<SystemOcrResult>
 }
+
+declare const window: { api: ReportMediaApi }
 
 export interface GroupReportTranscriptRow {
   id: string
@@ -68,6 +75,9 @@ export interface ReportImageInsightItem {
   description: string
   ocrText?: string
   tags: string[]
+  source?: 'local-ocr' | 'vision'
+  category?: ImageInsight['category']
+  importance?: ImageInsight['importance']
 }
 
 export interface ReportImageInsightFailure {
@@ -79,6 +89,7 @@ export interface ReportImageInsightFailure {
 
 export interface ReportImageInsightSummary {
   total: number
+  selection?: ReportImageSelectionStats
   succeeded: number
   failed: number
   items: ReportImageInsightItem[]
@@ -94,7 +105,14 @@ export interface ReportPreparationProgress {
 
 export interface BuildGroupReportFactsOptions {
   onProgress?: (progress: ReportPreparationProgress) => void
-  visionModel?: ReportModelChoice
+  visionModel?: Pick<ReportModelChoice, 'providerId' | 'model'> & Partial<ReportModelChoice>
+  imageLimit?: number
+  imageSelectionMode?: ReportImageSelectionMode
+  imageMethod?: ReportImageMethod
+  preferences?: ReportPreferences
+  imageApi?: ReportMediaApi
+  selectedImageIds?: string[]
+  previousInsights?: ReportImageInsightItem[]
 }
 
 function friendlyImageNotice(warnings: string[]): string {
@@ -278,6 +296,29 @@ const buildImageContext = (
   }
 }
 
+export function getReportImageInputs(
+  messages: Message[],
+  contact: Contact | null,
+  isGroup: boolean
+): NonNullable<ImageCandidateQuery['inputs']> {
+  return messages.flatMap((message, index) => {
+    if (message.contentData?.type !== 'image') return []
+    const context = buildImageContext(messages, index, contact, isGroup)
+    return [
+      {
+        messageId: message.id,
+        md5: message.contentData.md5,
+        datName: message.contentData.datName,
+        sessionId: message.sessionId || contact?.m_nsUsrName || '',
+        sender: summarySender(message, contact, isGroup),
+        sentAt: parseTimestamp(message),
+        responseCount: context.responseCount,
+        interactionCount: context.interactionCount
+      }
+    ]
+  })
+}
+
 const buildMediaSection = async (
   messages: Message[],
   contact: Contact | null,
@@ -293,189 +334,278 @@ const buildMediaSection = async (
   const warnings: string[] = []
   const imageFailures: ReportImageInsightFailure[] = []
   let imageCandidateTotal = 0
-  const rendererApi = typeof window === 'undefined' ? null : window.api
-  const rawImageCandidates = messages
-    .map((message, index) => {
-      if (message.contentData?.type !== 'image') return null
-      const sender = summarySender(message, contact, isGroup)
-      const context = buildImageContext(messages, index, contact, isGroup)
-      return {
-        sourceMessageIds: [message.id],
-        md5: message.contentData.md5,
-        datName: message.contentData.datName,
-        sessionId: message.sessionId,
-        sender,
-        time: localTime(parseTimestamp(message)),
-        note: context.note,
-        stats: context.stats,
-        replyCount: context.responseCount,
-        participantCount: context.participantCount,
-        interactionCount: context.interactionCount,
-        score: calculateImageHeatScore({
-          responseCount: context.responseCount,
-          interactionCount: context.interactionCount
-        }),
-        isHot: isHotImageCandidate({
-          responseCount: context.responseCount,
-          interactionCount: context.participantCount
-        })
-      }
-    })
-    .filter((item): item is NonNullable<typeof item> => Boolean(item))
-    .filter((item) => item.isHot)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 6)
+  let imageSelection: ReportImageSelectionStats | undefined
+  const imageLimit = normalizeReportImageLimit(options.imageLimit)
+  const imageSelectionMode = options.imageSelectionMode ?? 'hot-only'
+  const rendererApi = options.imageApi ?? (typeof window === 'undefined' ? null : window.api)
+  const rawImageCandidates = getReportImageInputs(messages, contact, isGroup)
+    .map((input) => ({
+      ...input,
+      sourceMessageIds: [input.messageId],
+      time: localTime(input.sentAt),
+      score: calculateImageHeatScore(input),
+      isHot: isHotImageCandidate(input)
+    }))
+    .sort((left, right) => Number(right.isHot) - Number(left.isHot) || right.score - left.score)
+  const eligibleImageCandidates = rawImageCandidates.filter(
+    (item) =>
+      imageLimit > 0 &&
+      (!options.selectedImageIds || options.selectedImageIds.includes(item.messageId)) &&
+      (options.selectedImageIds || imageSelectionMode === 'hot-first' || item.isHot)
+  )
 
   // ============================================================
   // AI 图片理解(ImageInsightService 接入)
-  // 通过 main 进程拿最多 3 张真正的热点图 + 已缓存的 Insight;
+  // 通过 main 进程按配置选择图片 + 已缓存的 Insight;
   // 未缓存的并发调 AI。失败不阻塞文字日报。
   // ============================================================
   let visionGallery: ReportVisionGalleryItem[] = []
   try {
     if (!rendererApi) throw new Error('后台模式不读取 Renderer 图片')
-    options.onProgress?.({ stage: 'selectingImages', label: '筛选热点图片' })
+    options.onProgress?.({ stage: 'selectingImages', label: '筛选日报图片' })
     const sessionId = messages.find((m) => m.sessionId)?.sessionId || (contact?.md5 ?? '')
     const startTime = messages.length ? parseTimestamp(messages[0]) : 0
     const endTime = messages.length ? parseTimestamp(messages[messages.length - 1]) : 0
 
     // 从 renderer 已加载的消息中提取图片候选(复用 buildImageContext 已算的 replyCount)
-    const imageInputs = rawImageCandidates.map((c) => {
-      const srcMsg = messages.find((m) => m.id === c.sourceMessageIds[0]) || messages[0]
-      return {
-        messageId: c.sourceMessageIds[0] || '',
-        md5: c.md5,
-        datName: c.datName,
-        sessionId: c.sessionId || sessionId,
-        sender: c.sender,
-        sentAt: parseTimestamp(srcMsg),
-        responseCount: c.replyCount || 0,
-        interactionCount: c.interactionCount || 0
-      }
-    })
+    const imageInputs = rawImageCandidates
+      .filter(
+        (c) => !options.selectedImageIds || options.selectedImageIds.includes(c.sourceMessageIds[0])
+      )
+      .map((c) => {
+        return {
+          messageId: c.sourceMessageIds[0] || '',
+          md5: c.md5,
+          datName: c.datName,
+          sessionId: c.sessionId || sessionId,
+          sender: c.sender,
+          sentAt: c.sentAt,
+          responseCount: c.responseCount || 0,
+          interactionCount: c.interactionCount || 0
+        }
+      })
 
-    const candidatesResp = await rendererApi.imageListCandidates({
-      sessionId,
-      startTime,
-      endTime,
-      limit: 3,
-      inputs: imageInputs
-    })
+    const candidatesResp: ImageCandidateResponse =
+      imageLimit > 0
+        ? await rendererApi.imageListCandidates({
+            sessionId,
+            startTime,
+            endTime,
+            limit: imageLimit,
+            selectionMode: options.selectedImageIds ? 'hot-first' : imageSelectionMode,
+            inputs: imageInputs
+          })
+        : {
+            success: true,
+            candidates: [],
+            selection: {
+              inputCount: rawImageCandidates.length,
+              excludedByHotRule: 0,
+              unavailable: 0,
+              duplicates: 0,
+              excludedByLimit: 0,
+              disabled: true
+            }
+          }
     const candidates = candidatesResp.success ? candidatesResp.candidates : []
+    imageSelection = candidatesResp.selection
+    if (imageSelection && options.selectedImageIds)
+      imageSelection = {
+        ...imageSelection,
+        inputCount: rawImageCandidates.length,
+        excludedByUser: rawImageCandidates.length - imageInputs.length
+      }
     imageCandidateTotal = candidates.length
     console.log('[buildMediaSection] imageListCandidates returned', candidates.length, 'candidates')
 
-    if (!candidatesResp.success && rawImageCandidates.length) {
-      imageCandidateTotal = Math.min(3, rawImageCandidates.length)
-      for (const candidate of rawImageCandidates.slice(0, imageCandidateTotal)) {
+    if (!candidatesResp.success && eligibleImageCandidates.length) {
+      imageCandidateTotal = Math.min(imageLimit, eligibleImageCandidates.length)
+      for (const candidate of eligibleImageCandidates.slice(0, imageCandidateTotal)) {
         imageFailures.push({
           messageId: candidate.sourceMessageIds[0],
           sender: candidate.sender,
           time: candidate.time,
-          error: candidatesResp.error || '热点图片筛选失败'
+          error: ('error' in candidatesResp && candidatesResp.error) || '日报图片筛选失败'
         })
       }
     }
 
     options.onProgress?.({
       stage: 'recognizingImages',
-      label: candidates.length ? '识别图片中' : '未找到可识别的热点图片',
+      label: candidates.length
+        ? '识别图片中'
+        : imageLimit === 0
+          ? '已关闭图片识别'
+          : '未找到可识别的图片',
       completed: 0,
       total: candidates.length
     })
 
     // 对每个候选:缓存命中直接用,未命中并发调 imageAnalyze
     let analyzedCount = 0
-    const analyzed = await Promise.all(
-      candidates.map(async (candidate) => {
-        const finish = (): void => {
-          analyzedCount += 1
-          options.onProgress?.({
-            stage: 'recognizingImages',
-            label: '识别图片中',
-            completed: analyzedCount,
-            total: candidates.length
-          })
+    const analyzeCandidate = async (candidate: ImageCandidate): Promise<ImageInsight | null> => {
+      const finish = (): void => {
+        analyzedCount += 1
+        options.onProgress?.({
+          stage: 'recognizingImages',
+          label: '识别图片中',
+          completed: analyzedCount,
+          total: candidates.length
+        })
+      }
+      const previous = options.previousInsights?.find(
+        (item) => item.messageId === candidate.messageId
+      )
+      if (previous) {
+        finish()
+        return {
+          ...previous,
+          id: candidate.messageId,
+          imageHash: candidate.imageHash,
+          sentAt: candidate.sentAt,
+          sessionId: candidate.sessionId,
+          category: previous.category || 'other',
+          importance: previous.importance || 'medium',
+          provider: previous.source === 'local-ocr' ? 'local-ocr' : 'previous-result',
+          model: '',
+          createdAt: Date.now(),
+          updatedAt: Date.now()
         }
-        if (candidate.insight) {
+      }
+      if (candidate.insight) {
+        if (
+          (!options.imageMethod || options.imageMethod === 'vision') &&
+          (!options.visionModel ||
+            (candidate.insight.provider === options.visionModel.providerId &&
+              candidate.insight.model === options.visionModel.model))
+        ) {
           finish()
           return candidate.insight
         }
-        // 未命中:解密图片拿 base64 → 调 AI
-        try {
-          const img = await rendererApi.getImage(
-            candidate.md5,
-            candidate.datName,
-            candidate.sessionId,
-            { includeData: true }
-          )
-          if (!img.success || !img.data) {
-            warnings.push(
-              `${candidate.sender} ${localTime(candidate.sentAt)} 的图片读取失败：${img.error || '未知错误'}`
-            )
-            imageFailures.push({
-              messageId: candidate.messageId,
-              sender: candidate.sender,
-              time: localTime(candidate.sentAt),
-              error: img.error || '图片读取失败'
-            })
-            return null
-          }
-          const analyzeResp = await rendererApi.imageAnalyze({
-            imageHash: candidate.imageHash,
-            imageDataUrl: img.data,
-            messageId: candidate.messageId,
-            sender: candidate.sender,
-            sentAt: candidate.sentAt,
-            sessionId: candidate.sessionId,
-            providerId: options.visionModel?.providerId,
-            modelId: options.visionModel?.model,
-            force: false
-          })
-          if (!analyzeResp.success || !analyzeResp.insight) {
-            warnings.push(
-              `${candidate.sender} ${localTime(candidate.sentAt)} 的图片识别失败：${analyzeResp.error || '模型未返回识别结果'}`
-            )
-            imageFailures.push({
-              messageId: candidate.messageId,
-              sender: candidate.sender,
-              time: localTime(candidate.sentAt),
-              error: analyzeResp.error || '模型未返回识别结果'
-            })
-            return null
-          }
-          return analyzeResp.insight
-        } catch (error) {
-          console.warn('[buildMediaSection] image analyze failed:', error)
+      }
+      // 未命中:解密图片拿 base64 → 调 AI
+      try {
+        const img = await rendererApi.getImage(
+          candidate.md5,
+          candidate.datName,
+          candidate.sessionId,
+          { includeData: true }
+        )
+        if (!img.success || !img.data) {
           warnings.push(
-            `${candidate.sender} ${localTime(candidate.sentAt)} 的图片识别异常：${error instanceof Error ? error.message : String(error)}`
+            `${candidate.sender} ${localTime(candidate.sentAt)} 的图片读取失败：${img.error || '未知错误'}`
           )
           imageFailures.push({
             messageId: candidate.messageId,
             sender: candidate.sender,
             time: localTime(candidate.sentAt),
-            error: error instanceof Error ? error.message : String(error)
+            error: img.error || '图片读取失败'
           })
           return null
-        } finally {
-          finish()
+        }
+        if (options.imageMethod === 'ocr-only' || options.imageMethod === 'ocr-first') {
+          let ocr: SystemOcrResult | undefined
+          try {
+            ocr = await rendererApi.recognizeLocalImageText?.({
+              imageDataUrl: img.data,
+              imageHash: candidate.imageHash
+            })
+          } catch (error) {
+            if (options.imageMethod === 'ocr-only') throw error
+          }
+          if (ocr?.success && ocr.text.trim()) {
+            return {
+              id: `local-ocr:${candidate.messageId}`,
+              messageId: candidate.messageId,
+              imageHash: candidate.imageHash,
+              description: '本地 OCR 提取的图片文字（未进行图意分析）',
+              ocrText: ocr.text,
+              tags: ['本地文字识别'],
+              category: 'document',
+              importance: 'medium',
+              provider: 'local-ocr',
+              model: ocr.engine,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              sender: candidate.sender,
+              sentAt: candidate.sentAt,
+              sessionId: candidate.sessionId
+            }
+          }
+          if (options.imageMethod === 'ocr-only')
+            throw new Error(ocr?.error || '本地 OCR 未识别到文字；未调用视觉模型')
+        }
+        const analyzeResp = await rendererApi.imageAnalyze({
+          imageHash: candidate.imageHash,
+          imageDataUrl: img.data,
+          messageId: candidate.messageId,
+          sender: candidate.sender,
+          sentAt: candidate.sentAt,
+          sessionId: candidate.sessionId,
+          providerId: options.visionModel?.providerId,
+          modelId: options.visionModel?.model,
+          force: false
+        })
+        if (!analyzeResp.success || !analyzeResp.insight) {
+          warnings.push(
+            `${candidate.sender} ${localTime(candidate.sentAt)} 的图片识别失败：${analyzeResp.error || '模型未返回识别结果'}`
+          )
+          imageFailures.push({
+            messageId: candidate.messageId,
+            sender: candidate.sender,
+            time: localTime(candidate.sentAt),
+            error: analyzeResp.error || '模型未返回识别结果'
+          })
+          return null
+        }
+        return analyzeResp.insight
+      } catch (error) {
+        console.warn('[buildMediaSection] image analyze failed:', error)
+        warnings.push(
+          `${candidate.sender} ${localTime(candidate.sentAt)} 的图片识别异常：${error instanceof Error ? error.message : String(error)}`
+        )
+        imageFailures.push({
+          messageId: candidate.messageId,
+          sender: candidate.sender,
+          time: localTime(candidate.sentAt),
+          error: error instanceof Error ? error.message : String(error)
+        })
+        return null
+      } finally {
+        finish()
+      }
+    }
+    // 数量增加时仍最多并行 3 个识别请求，避免同时占满视觉模型连接。
+    const analyzed: Array<ImageInsight | null> = Array(candidates.length).fill(null)
+    let nextCandidate = 0
+    await Promise.all(
+      Array.from({ length: Math.min(3, candidates.length) }, async () => {
+        while (nextCandidate < candidates.length) {
+          const index = nextCandidate++
+          analyzed[index] = await analyzeCandidate(candidates[index])
         }
       })
     )
-    visionGallery = analyzed
-      .filter((it): it is NonNullable<typeof it> => Boolean(it))
-      .map((it) => ({
-        messageId: it.messageId,
-        imageHash: it.imageHash,
-        sender: it.sender,
-        time: localTime(it.sentAt),
-        description: it.description,
-        ocrText: it.ocrText,
-        tags: it.tags,
-        category: it.category,
-        importance: it.importance,
-        sourceMessageIds: [it.messageId]
-      }))
+    // 缓存只复用图片内容，来源始终使用本次选中的消息，避免跨群转发串错成员和时间。
+    visionGallery = analyzed.flatMap((it, index) =>
+      it
+        ? [
+            {
+              messageId: candidates[index].messageId,
+              imageHash: it.imageHash,
+              sender: candidates[index].sender,
+              time: localTime(candidates[index].sentAt),
+              description: it.description,
+              ocrText: it.ocrText,
+              tags: it.tags,
+              category: it.category,
+              importance: it.importance,
+              source: it.provider === 'local-ocr' ? ('local-ocr' as const) : ('vision' as const),
+              sourceMessageIds: [candidates[index].messageId]
+            }
+          ]
+        : []
+    )
     // 为 visionGallery 加载原图 dataUrl(给 main 渲染用,不暴露给 LLM)
     if (visionGallery.length) {
       visionGallery = await Promise.all(
@@ -499,9 +629,9 @@ const buildMediaSection = async (
   } catch (error) {
     console.warn('[buildMediaSection] vision flow failed, fallback to empty:', error)
     warnings.push(`图片识别流程失败：${error instanceof Error ? error.message : String(error)}`)
-    if (!imageFailures.length && rawImageCandidates.length) {
-      imageCandidateTotal = Math.min(3, rawImageCandidates.length)
-      for (const candidate of rawImageCandidates.slice(0, imageCandidateTotal)) {
+    if (!imageFailures.length && eligibleImageCandidates.length) {
+      imageCandidateTotal = Math.min(imageLimit, eligibleImageCandidates.length)
+      for (const candidate of eligibleImageCandidates.slice(0, imageCandidateTotal)) {
         imageFailures.push({
           messageId: candidate.sourceMessageIds[0],
           sender: candidate.sender,
@@ -620,6 +750,7 @@ const buildMediaSection = async (
     warnings,
     imageInsightSummary: {
       total: imageCandidateTotal,
+      selection: imageSelection,
       succeeded: visionGallery.length,
       failed: imageFailures.length,
       items: visionGallery.map((item) => ({
@@ -628,7 +759,10 @@ const buildMediaSection = async (
         time: item.time,
         description: item.description,
         ocrText: item.ocrText,
-        tags: item.tags
+        tags: item.tags,
+        source: item.source,
+        category: item.category,
+        importance: item.importance
       })),
       failures: imageFailures
     }
@@ -798,13 +932,15 @@ export const buildGroupReportFacts = async (
   if (imageCount > 0 && !media.visionGallery?.length) {
     metadata.footerNote = friendlyImageNotice(warnings)
   } else if (media.visionGallery?.length) {
-    metadata.footerNote = `基于已读取聊天记录生成；其中 ${media.visionGallery.length} 张图片已由当前视觉模型识别。`
+    const localCount = media.visionGallery.filter((item) => item.source === 'local-ocr').length
+    metadata.footerNote = `基于已读取聊天记录生成；本地 OCR ${localCount} 张，视觉模型识别 ${media.visionGallery.length - localCount} 张。`
   }
 
   if (
     transcriptRows.length > 0 &&
     transcriptRows.every((row) => row.content === '[图片]') &&
     imageInsightSummary.total > 0 &&
+    imageInsightSummary.failed === 0 &&
     !media.visionGallery?.length
   ) {
     throw new Error(

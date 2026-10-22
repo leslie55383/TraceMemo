@@ -542,6 +542,10 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.report-range-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .report-range-options small,
 .report-density-options small {
   display: block;
@@ -767,9 +771,13 @@
   min-height: 0;
   height: 100%;
   flex-direction: column;
-  overflow: hidden;
+  overflow: hidden auto;
   border-left: 1px solid var(--wxex-border);
   background: var(--wxex-bg-sidebar);
+}
+
+.report-task-panel > * {
+  flex-shrink: 0;
 }
 
 .report-task-header {

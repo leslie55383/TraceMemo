@@ -30,6 +30,32 @@ async function openScheduledReportEditor(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: '新建定时日报' })).toBeVisible()
 }
 
+test('saves independent OCR, density, module and model preferences on a scheduled rule', async () => {
+  const fixture = await launchTestApp({ now: FIXTURE_NOW })
+  try {
+    const page = fixture.page
+    await openScheduledReportEditor(page)
+    await page.getByRole('textbox', { name: '定时日报任务名称' }).fill('fixture-custom-report')
+    await page.getByRole('radio', { name: '产品测试群' }).click()
+    await page.getByRole('switch', { name: '为此规则单独设置日报' }).check()
+    await page.getByRole('spinbutton', { name: '单份日报最多识别图片数' }).fill('8')
+    await page.getByRole('combobox', { name: '图片处理方式' }).click()
+    await page.getByRole('option', { name: '仅本地 OCR 提取文字', exact: true }).click()
+    await page.getByRole('combobox', { name: '内容密度', exact: true }).click()
+    await page.getByRole('option', { name: '详细', exact: true }).click()
+    await page.getByRole('checkbox', { name: '关键词', exact: true }).uncheck()
+    await page.getByRole('combobox', { name: '规则文字总结模型' }).click()
+    await page.getByRole('option', { name: '本地假服务 · 固定响应模型', exact: true }).click()
+    await page.getByRole('button', { name: '保存', exact: true }).click()
+    await expect.poll(async () => page.evaluate(async () => (await window.api.listAutomationRules()).find(rule => rule.name === 'fixture-custom-report')?.scheduledReport?.report.preferences?.imageLimit)).toBe(8)
+    const preferences = await page.evaluate(async () => (await window.api.listAutomationRules()).find(rule => rule.name === 'fixture-custom-report')?.scheduledReport?.report.preferences)
+    expect(preferences?.imageMethod).toBe('ocr-only')
+    expect(preferences?.density).toBe('detailed')
+    expect(preferences?.sections).not.toContain('keywords')
+    expect(preferences?.textModel?.model).toBe('fixture-model')
+  } finally { await fixture.close() }
+})
+
 test('SCHEDULED-REPORT-UI-01 creates a scheduled report rule from the automation workspace without viewport overflow', async () => {
   test.skip(
     process.platform !== 'darwin' && process.platform !== 'win32',
