@@ -388,7 +388,7 @@ describe('daily report controls', () => {
     expect(onRetry).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: 'provider-2', model: 'model-2' })
     )
-    expect(screen.getByText(/从第三步继续/)).toBeVisible()
+    expect(screen.getByText(/复用聊天记录和图片结果，从模型步骤继续/)).toBeVisible()
   })
 
   it('selects separate text-summary and image-understanding models with the 10-minute cache rule', async () => {

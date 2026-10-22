@@ -36,11 +36,15 @@ const model = {
 }
 const types: SummaryMessageType[] = ['image']
 let state: ReturnType<typeof useGroupReportGeneration>
-function Harness(): React.ReactElement {
+function Harness({
+  messageTypes = types
+}: {
+  messageTypes?: SummaryMessageType[]
+}): React.ReactElement {
   state = useGroupReportGeneration({
     sourceContact: contact,
     summaryDateRange: 'today',
-    summaryMessageTypes: types,
+    summaryMessageTypes: messageTypes,
     modelConfig: model
   })
   return (
@@ -173,4 +177,53 @@ describe('report generation enhancements', () => {
     })
     expect(onChange).toHaveBeenCalledWith({ start: '2026-10-01T09:00', end: '' })
   })
+
+  it.each([false, true])(
+    'retries long records with model change %s and reuses only compatible summaries',
+    async (changeModel) => {
+      vi.mocked(window.api.getMessages).mockResolvedValue(
+        Array.from({ length: 6 }, (_, index) => ({
+          ...messages[0],
+          id: `fixture-long-${index}`,
+          type: '普通文本',
+          content: '示例讨论。'.repeat(1_600),
+          contentData: { type: 'text', content: '示例讨论。'.repeat(1_600) }
+        }))
+      )
+      const chat = vi.mocked(window.api.aiChat)
+      const reportReply = {
+        success: true,
+        data: JSON.stringify({
+          topics: [{ title: 'fixture', summary: 'fixture', keywords: [], heat: '高' }]
+        })
+      }
+      let summaries = 0
+      let fail = true
+      chat.mockImplementation(async (input) => {
+        if (input[0].content.includes('证据整理员')) {
+          summaries++
+          if (summaries === 2 && fail) return { success: false, error: 'fixture-transient' }
+          return { success: true, data: '[fixture-long-0] 2026-10-01 示例成员确认需求' }
+        }
+        return reportReply
+      })
+      render(<Harness messageTypes={['text']} />)
+      await waitFor(() => expect(state.rangeState.status).toBe('success'))
+      await act(async () => {
+        await state.generate()
+      })
+      expect(state.phase).toBe('error')
+      expect(window.api.exportGroupReport).not.toHaveBeenCalled()
+      expect(summaries).toBe(2)
+      fail = false
+      await act(async () => {
+        await state.retry(changeModel ? { ...model, model: 'fixture-second' } : undefined)
+      })
+      expect(state.phase).toBe('success')
+      expect(state.reportMetadata?.longRecordSummary?.chunks).toBeGreaterThan(1)
+      expect(
+        chat.mock.calls.filter(([input]) => input[1].content.includes('分段总结 1/'))
+      ).toHaveLength(changeModel ? 2 : 1)
+    }
+  )
 })

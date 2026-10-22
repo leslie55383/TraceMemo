@@ -61,6 +61,9 @@ export function ReportRangeSelector({
           自定义
         </SegmentedControlItem>
       </SegmentedControl>
+      <p className="text-xs text-muted-foreground mt-2">
+        长记录会自动分段总结后汇总，增加模型调用与耗时；内容过多时可缩小范围或增加日报超时。
+      </p>
       {value === 'custom' && onCustomRangeChange && (
         <div className="grid grid-cols-2 gap-3 mt-3">
           <label>

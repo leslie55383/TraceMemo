@@ -20,6 +20,11 @@ import type { CustomReportRange } from '../../shared/report-date-range'
 import { loadReportPreferences } from './report-preferences-service'
 import { getReportMediaRuntime, prepareReportVoiceMessages } from './report-media-runtime'
 import {
+  prepareLongReportInput,
+  reportResponseUsage,
+  ReportSummaryError
+} from '../../shared/report-long-record'
+import {
   buildGroupReportInput,
   getSummaryDateRange,
   GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT,
@@ -222,16 +227,54 @@ export async function generateAgentGroupReport(
     )
   const runtime = aiProvider.getRuntimeConfig()
   const sessionId = randomUUID()
+  const deadlineAt = Date.now() + Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000
+  let prepared: Awaited<ReturnType<typeof prepareLongReportInput>>
+  try {
+    prepared = await prepareLongReportInput({
+      prompt: input.prompt,
+      source: input.summarySource,
+      systemPrompt: GROUP_REPORT_SYSTEM_PROMPT,
+      deadlineAt,
+      summarize: (messages, timeoutMs) =>
+        aiProvider.chat(messages, {
+          sessionId,
+          providerId: preferences.textModel?.providerId,
+          modelId: preferences.textModel?.model,
+          timeoutMs
+        })
+    })
+  } catch (error) {
+    const response = error instanceof ReportSummaryError ? error.response : undefined
+    return {
+      ...reportFailure(
+        error instanceof Error ? error.message : String(error),
+        'ai',
+        response?.errorCode || 'REPORT_GENERATION_FAILED'
+      ),
+      ...(response?.errorStatus !== undefined ? { errorStatus: response.errorStatus } : {}),
+      ...(response?.errorType ? { errorType: response.errorType } : {})
+    }
+  }
+  if (prepared.stats) {
+    input.metadata.longRecordSummary = prepared.stats
+    input.metadata.recordNote += `；长记录分 ${prepared.stats.chunks} 段整理后汇总，压缩可能省略细节`
+  }
+  if (Date.now() >= deadlineAt)
+    return reportFailure(
+      '长记录处理超时，请增加日报超时或缩小范围',
+      'ai',
+      'REPORT_GENERATION_FAILED'
+    )
   const ai = await aiProvider.chat(
     [
       { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
-      { role: 'user', content: input.prompt }
+      { role: 'user', content: prepared.prompt }
     ],
     {
       sessionId,
       providerId: preferences.textModel?.providerId,
       modelId: preferences.textModel?.model,
-      timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000
+      timeoutMs: Math.max(1, deadlineAt - Date.now())
     }
   )
   if (!ai.success || !ai.data) {
@@ -241,7 +284,17 @@ export async function generateAgentGroupReport(
       ...(ai.errorType ? { errorType: ai.errorType } : {})
     }
   }
-  let tokenUsage = ai.usage
+  let tokenUsage = mergeTokenUsage(
+    prepared.usage,
+    reportResponseUsage(GROUP_REPORT_SYSTEM_PROMPT, prepared.prompt, ai)
+  )
+  if (ai.finishReason && !['stop', 'end_turn'].includes(ai.finishReason)) {
+    return reportFailure(
+      `模型未完整生成日报（${ai.finishReason}），请检查模型输出上限`,
+      'ai',
+      'REPORT_GENERATION_FAILED'
+    )
+  }
   const parseReport = (raw: string): ReturnType<typeof parseGroupDailyReport> =>
     parseGroupDailyReport(
       raw,
@@ -255,6 +308,12 @@ export async function generateAgentGroupReport(
   try {
     report = parseReport(ai.data)
   } catch (parseError) {
+    if (Date.now() >= deadlineAt)
+      return reportFailure(
+        '日报处理超时，未执行 JSON 修复，请增加超时或缩小范围',
+        'ai',
+        'REPORT_GENERATION_FAILED'
+      )
     const repaired = await aiProvider.chat(
       [
         { role: 'system', content: GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT },
@@ -264,7 +323,7 @@ export async function generateAgentGroupReport(
         sessionId,
         providerId: preferences.textModel?.providerId,
         modelId: preferences.textModel?.model,
-        timeoutMs: Math.max(30, Math.min(1800, request.timeoutSeconds || 300)) * 1000
+        timeoutMs: Math.max(1, deadlineAt - Date.now())
       }
     )
     if (!repaired.success || !repaired.data) {
@@ -279,7 +338,17 @@ export async function generateAgentGroupReport(
         ...(repaired.errorType ? { errorType: repaired.errorType } : {})
       }
     }
-    tokenUsage = mergeTokenUsage(tokenUsage, repaired.usage)
+    tokenUsage = mergeTokenUsage(
+      tokenUsage,
+      reportResponseUsage(GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT, ai.data, repaired)
+    )
+    if (repaired.finishReason && !['stop', 'end_turn'].includes(repaired.finishReason)) {
+      return reportFailure(
+        `模型未完整修复日报（${repaired.finishReason}），请检查模型输出上限`,
+        'ai',
+        'REPORT_GENERATION_FAILED'
+      )
+    }
     try {
       report = parseReport(repaired.data)
     } catch (repairError) {

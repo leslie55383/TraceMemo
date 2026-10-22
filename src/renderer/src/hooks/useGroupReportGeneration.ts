@@ -33,6 +33,7 @@ import {
   type ReportPreferences
 } from '../../../shared/report-preferences'
 import type { CustomReportRange } from '../../../shared/report-date-range'
+import { prepareLongReportInput, type ReportSummaryCache } from '../../../shared/report-long-record'
 import {
   normalizeReportImageLimit,
   type ReportImageSelectionMode
@@ -108,6 +109,7 @@ interface PreparedReportContext {
   input: Awaited<ReturnType<typeof buildGroupReportInput>>
   startedAt: number
   logs: ReportGenerationLog[]
+  summaryCache?: { modelKey: string; entries: ReportSummaryCache }
 }
 
 export interface ReportTaskStep {
@@ -609,9 +611,38 @@ export function useGroupReportGeneration({
       })
 
       try {
+        const deadlineAt = Date.now() + reportTimeoutSeconds * 1000
+        const modelKey = JSON.stringify([selectedModel.providerId, selectedModel.model])
+        if (context.summaryCache?.modelKey !== modelKey) {
+          context.summaryCache = { modelKey, entries: new Map() }
+        }
+        const prepared = await trackStep('长记录检查与分段整理', () =>
+          prepareLongReportInput({
+            prompt: context.input.prompt,
+            source: context.input.summarySource,
+            systemPrompt: GROUP_REPORT_SYSTEM_PROMPT,
+            deadlineAt,
+            cache: context.summaryCache!.entries,
+            onProgress: (label) => setPreparationProgress({ stage: 'summarizingInput', label }),
+            summarize: (messages, timeoutMs) =>
+              window.api.aiChat(messages, {
+                sessionId: context.sessionId,
+                providerId: selectedModel.providerId,
+                modelId: selectedModel.model,
+                timeoutMs
+              })
+          })
+        )
+        if (prepared.stats) {
+          context.input.metadata.longRecordSummary = prepared.stats
+          const baseNote = context.input.metadata.recordNote.split('；长记录分 ')[0]
+          context.input.metadata.recordNote = `${baseNote}；长记录分 ${prepared.stats.chunks} 段整理后汇总，压缩可能省略细节`
+        }
+        if (Date.now() >= deadlineAt) throw new Error('长记录处理超时，请增加日报超时或缩小范围')
+        const remainingMs = (): number => Math.max(1, deadlineAt - Date.now())
         const aiMessages = [
           { role: 'system', content: GROUP_REPORT_SYSTEM_PROMPT },
-          { role: 'user', content: context.input.prompt }
+          { role: 'user', content: prepared.prompt }
         ]
         const result = await trackStep(`AI 生成（${selectedModel.model}）`, () =>
           withTimeout(
@@ -619,10 +650,10 @@ export function useGroupReportGeneration({
               sessionId: context.sessionId,
               providerId: selectedModel.providerId,
               modelId: selectedModel.model,
-              timeoutMs: reportTimeoutSeconds * 1000
+              timeoutMs: remainingMs()
             }),
             'AI 生成日报',
-            reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
+            remainingMs() + REPORT_MODEL_TIMEOUT_BUFFER_MS
           )
         )
         if (
@@ -647,6 +678,7 @@ export function useGroupReportGeneration({
           result.usage && result.usage.total
             ? result.usage
             : estimateTokenUsage(aiMessages, result.data)
+        if (prepared.usage) tokenUsage = mergeTokenUsage(prepared.usage, tokenUsage)
 
         let report: ReturnType<typeof parseGroupDailyReport>
         try {
@@ -659,6 +691,8 @@ export function useGroupReportGeneration({
             context.input.media
           )
         } catch (parseError) {
+          if (Date.now() >= deadlineAt)
+            throw new Error('日报处理超时，未执行 JSON 修复，请增加超时或缩小范围')
           writeReportLog('warn', '本地修复日报 JSON 失败，尝试由模型纠正', {
             ...jsonErrorContext(result.data, parseError),
             retry: 1
@@ -673,10 +707,10 @@ export function useGroupReportGeneration({
                 sessionId: context.sessionId,
                 providerId: selectedModel.providerId,
                 modelId: selectedModel.model,
-                timeoutMs: reportTimeoutSeconds * 1000
+                timeoutMs: remainingMs()
               }),
               'AI 修复日报 JSON',
-              reportTimeoutSeconds * 1000 + REPORT_MODEL_TIMEOUT_BUFFER_MS
+              remainingMs() + REPORT_MODEL_TIMEOUT_BUFFER_MS
             )
           )
           if (

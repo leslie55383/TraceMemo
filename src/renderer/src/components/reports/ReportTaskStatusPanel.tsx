@@ -321,7 +321,9 @@ export function ReportTaskStatusPanel({
                   ))}
                 </SelectContent>
               </Select>
-              <small>重新生成将直接复用已整理的聊天记录和图片识别结果，从第三步继续。</small>
+              <small>
+                复用聊天记录和图片结果，从模型步骤继续；同一模型复用成功分段，切换模型则重新整理分段。
+              </small>
               {modelLoadError ? <small className="error">{modelLoadError}</small> : null}
               <Button disabled={!selectedModel} onClick={() => onRetry(selectedModel)}>
                 使用所选模型重新生成

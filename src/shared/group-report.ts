@@ -340,6 +340,7 @@ export interface GroupReportMetadata {
   avatars: Record<string, string | undefined>
   reportMode?: ReportMode
   reportPreferences?: import('./report-preferences').ReportPreferences
+  longRecordSummary?: import('./report-long-record').LongRecordSummaryStats
   talker?: string
   timeRange?: string
   warnings?: string[]

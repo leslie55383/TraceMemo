@@ -23,6 +23,7 @@ import { jsonrepair } from 'jsonrepair'
 import { buildGroupReportFacts } from './group-report-facts'
 import type { BuildGroupReportFactsOptions, ReportImageInsightSummary } from './group-report-facts'
 import { REPORT_SECTION_OPTIONS } from '../../../shared/report-preferences'
+import type { ReportSummarySource } from '../../../shared/report-long-record'
 import {
   resolveReportDateRange,
   type ReportDateRange,
@@ -87,6 +88,7 @@ export const GROUP_REPORT_JSON_REPAIR_SYSTEM_PROMPT =
 
 export interface GroupReportInput {
   prompt: string
+  summarySource?: ReportSummarySource
   metadata: GroupReportMetadata
   topSpeakers: ReportSpeakerRank[]
   activeTimeline: string
@@ -206,12 +208,13 @@ export const buildGroupReportInput = async (
     .map((row) => `[${row.id}] ${row.datetime} ${row.sender}：${row.content}`)
     .join('\n')
 
-  const prompt = `请为以下微信${isGroup ? '群聊' : '对话'}记录生成日报 JSON。
+  const context = `请为以下微信${isGroup ? '群聊' : '对话'}记录生成日报 JSON。
 
 会话名：${facts.metadata.groupName}
 时间范围：${facts.metadata.dateRange}
 消息数：${facts.metadata.messageCount}
 活跃人数：${facts.metadata.activeUsers}
+媒体统计：图片 ${facts.metadata.imageCount || 0} 张，语音 ${facts.metadata.voiceCount || 0} 条，表情 ${facts.metadata.stickerCount || 0} 条
 目标模式：${REPORT_MODE_LABEL[reportMode]}
 内容密度：${options.preferences?.density === 'detailed' ? '详细：保留关键证据、决定过程与待办上下文' : options.preferences?.density === 'concise' ? '简洁：只保留最重要结论和行动' : '标准'}
 展示模块：${
@@ -222,7 +225,9 @@ export const buildGroupReportInput = async (
       : '全部'
   }。未选择模块对应字段返回空数组，hero 概要始终生成。
 话题覆盖：${desiredTopicCount}
-完整性：仅基于当前应用已加载的记录。
+完整性：仅基于当前应用已加载的记录。`
+
+  const prompt = `${context}
 
 媒体与结构化事实（可引用行为，不可猜测图片内容）：
 ${facts.factsPrompt || '无'}
@@ -232,6 +237,16 @@ ${transcript}`
 
   return {
     prompt,
+    summarySource: {
+      context,
+      records: [
+        { label: '媒体与结构化事实（不是聊天原文）', content: facts.factsPrompt || '无' },
+        ...facts.transcriptRows.map((row) => ({
+          label: `[${row.id}] ${row.datetime} ${row.sender}：`,
+          content: row.content
+        }))
+      ]
+    },
     metadata: facts.metadata,
     topSpeakers: facts.topSpeakers,
     activeTimeline: facts.activeTimeline,
