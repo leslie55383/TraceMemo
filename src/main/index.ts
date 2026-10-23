@@ -1,4 +1,7 @@
 import path from 'node:path'
+import { AttachmentDocumentService } from './attachments/attachment-document-service'
+import type { AttachmentReference } from '../shared/attachment-document'
+import { resolveAttachmentSource } from './attachments/attachment-source'
 import {
   isLegacyMigrationHelper,
   isUserDataIsolated,
@@ -968,6 +971,59 @@ app.whenReady().then(async () => {
     app.getPath('userData'),
     join(__dirname, 'knowledgeWorker.js')
   )
+  const attachmentDocuments = new AttachmentDocumentService({
+    root: app.getPath('userData'),
+    accountId: () =>
+      chat.isReady() ? chat.getSelfAccountInfo()?.wxid || chat.getCurrentAccountRoot() : '',
+    resolveSource: ref => resolveAttachmentSource(ref, { resolveContact: chat.resolveMd5, listMessages: chat.listMessagesAsync }),
+    chooseFile: async (source) => {
+      const selected = await dialog.showOpenDialog({
+        title: `选择原附件：${source.fileName}`,
+        properties: ['openFile'],
+        filters: [{ name: '原附件', extensions: [extname(source.fileName).slice(1).toLowerCase()] }]
+      })
+      const file = selected.filePaths[0]
+      if (selected.canceled || !file) return undefined
+      if (extname(file).toLowerCase() !== extname(source.fileName).toLowerCase())
+        throw new Error('文件格式与原附件不符')
+      if (path.basename(file) !== path.basename(source.fileName)) {
+        const confirmation = await dialog.showMessageBox({
+          type: 'question',
+          title: '确认附件对应关系',
+          message: '所选文件名与聊天附件名不同',
+          detail: `聊天附件：${source.fileName}\n所选文件：${path.basename(file)}\n请确认是同一份附件，否则搜索引用会指向错误消息。`,
+          buttons: ['取消', '确认是同一附件'],
+          defaultId: 0,
+          cancelId: 0
+        })
+        if (confirmation.response !== 1) return undefined
+      }
+      return file
+    }
+  })
+  knowledgeSearchService.setAttachmentSearchResolver(
+    async (request) => (await attachmentDocuments.search(request)).evidence
+  )
+  ipcMain.handle('attachment:runtime', () => attachmentDocuments.runtimeStatus())
+  ipcMain.handle('attachment:prepare', () => attachmentDocuments.prepareRuntime())
+  ipcMain.handle('attachment:status', (_, ref: AttachmentReference) =>
+    attachmentDocuments.status(ref)
+  )
+  ipcMain.handle('attachment:parse', (_, ref: AttachmentReference) =>
+    attachmentDocuments.parse(ref)
+  )
+  ipcMain.handle('attachment:cancel', (_, ref: AttachmentReference) =>
+    attachmentDocuments.cancel(ref)
+  )
+  ipcMain.handle('attachment:remove', (_, ref: AttachmentReference) =>
+    attachmentDocuments.remove(ref)
+  )
+  ipcMain.handle(
+    'attachment:read',
+    (_, request: { conversationId: string; messageIds: string[] }) =>
+      attachmentDocuments.read(request.conversationId, request.messageIds)
+  )
+  app.on('before-quit', () => attachmentDocuments.dispose())
   knowledgeSearchService.setVoiceTranscriptResolver(
     (reference) => voiceRecognition?.getTranscriptSnapshot(reference) || { state: 'pending' }
   )
@@ -1253,6 +1309,7 @@ app.whenReady().then(async () => {
       'electron',
       'knowledge',
       'image-text-index',
+      'attachment-text',
       'all'
     ]
     if (!allowedScopes.includes(scope)) return getCacheSummary()
@@ -1261,6 +1318,7 @@ app.whenReady().then(async () => {
     // "哪些会话有 OCR 派生文本"，才能把这些会话的 Knowledge 索引一起失效。
     // 句柄由 beforeClearImageTextIndex 内部的 clear() 自己关闭（删文件前）。
     return clearCache(scope, {
+      clearAttachmentText: () => attachmentDocuments.clearIndexes(),
       beforeClearKnowledge: () =>
         knowledgeSearchService?.prepareForCacheClear() || Promise.resolve(),
       beforeClearImageTextIndex: async () => {
@@ -1271,6 +1329,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('db:init', async (_, key: string, accountRoot?: string) => {
+    attachmentDocuments.cancelAll()
     if (appShutdownRequested) {
       return { success: false, error: '应用正在退出，数据库连接已取消', monitoring: false }
     }
@@ -2789,6 +2848,8 @@ app.whenReady().then(async () => {
   })
 
   bindReportMediaRuntime({
+    attachmentReadDocuments: (request) =>
+      attachmentDocuments.read(request.conversationId, request.messageIds),
     imageListCandidates: async (query) => ({
       success: true,
       ...(await imageInsightService.selectReportImages(query, query.inputs))
@@ -2821,14 +2882,14 @@ app.whenReady().then(async () => {
   /** 日报入口:取会话 Top N 热点图片 + 已缓存的 Insight */
   ipcMain.handle(
     'image:listCandidates',
-    async (
-      _,
-      query: ImageCandidateQuery
-    ): Promise<ImageCandidateResponse> => {
+    async (_, query: ImageCandidateQuery): Promise<ImageCandidateResponse> => {
       try {
         const inputs = query.inputs || []
         console.log('[IPC] image:listCandidates received %d inputs', inputs.length)
-        const { candidates, selection } = await imageInsightService.selectReportImages(query, inputs)
+        const { candidates, selection } = await imageInsightService.selectReportImages(
+          query,
+          inputs
+        )
         console.log('[IPC] image:listCandidates returned %d candidates', candidates.length)
         return { success: true, candidates, selection }
       } catch (error) {
@@ -3024,6 +3085,7 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('db:disconnect', (_, options?: { closeNative?: boolean }) => {
+    attachmentDocuments.cancelAll()
     // 断开操作保持幂等：渲染进程可能已标记断开，或主进程连接已先行失效。
     // 即使当前未就绪，也应让用户正常返回登录页。
     voiceBatchService?.cancel()

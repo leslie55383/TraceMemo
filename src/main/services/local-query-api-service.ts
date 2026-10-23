@@ -600,7 +600,9 @@ export class LocalQueryApiService {
 
     const covered = indexCovers(found.indexLatestAt, requestedEnd, found.sourceLatestAt)
     const evidence = new Map(found.evidence)
-    if (directFallback) for (const [key, item] of directFallback.evidence) evidence.set(key, item)
+    if (directFallback) for (const [key, item] of directFallback.evidence) {
+      if (evidence.get(key)?.derivedSource !== 'attachment_text') evidence.set(key, item)
+    }
     const indexCoverage = buildIndexCoverage(
       found.indexLatestAt,
       found.sourceLatestAt,
@@ -626,6 +628,7 @@ export class LocalQueryApiService {
       probeCount: probes.length,
       evidenceCount: evidence.size,
       evidence: Array.from(evidence.values()).slice(0, limit),
+      attachmentTextNotice: '附件正文只覆盖用户主动解析且本地文件仍有效的 PDF、DOCX、XLSX；未命中不能证明未解析的附件中不存在相关内容。',
       scope: corpus.scope,
       indexLatestAt: found.indexLatestAt,
       sourceLatestAt: found.sourceLatestAt,
@@ -773,7 +776,7 @@ export class LocalQueryApiService {
         found.evidence.map((item) => {
           const owner = contactByMd5.get(item.conversationId)
           return [
-            `${item.conversationId}:${item.messageId}`,
+            `${item.conversationId}:${item.derivedSource === 'attachment_text' ? normalizeMessageIdentity(item.conversationId, item.messageId)?.messageId || item.messageId : item.messageId}`,
             {
               messageRef: toRef(item.conversationId, item.messageId),
               timestamp: item.timestamp,
@@ -793,7 +796,12 @@ export class LocalQueryApiService {
     }
     const mergeStartedAt = Date.now()
     const all = new Map<string, QueryEvidenceItem>()
-    for (const entries of perProbe) for (const [key, item] of entries) all.set(key, item)
+    for (const entries of perProbe) for (const [key, item] of entries) {
+      const previous = all.get(key)
+      if (previous?.derivedSource === 'attachment_text' && item.derivedSource === 'attachment_text') {
+        if (!previous.text.includes(item.text)) previous.text += '\n\n' + item.text
+      } else if (previous?.derivedSource !== 'attachment_text') all.set(key, item)
+    }
     const mergeMs = Date.now() - mergeStartedAt
     const hasKnowledgeTiming =
       knowledge.shortTermSearchMs > 0 ||

@@ -166,6 +166,7 @@ export async function generateAgentGroupReport(
     video: ['视频'],
     voice: ['语音'],
     share: ['分享消息', '名片', '位置', '通话'],
+    file: ['文件'],
     system: ['系统消息']
   }
   const selectedTypes = new Set(

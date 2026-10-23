@@ -1,4 +1,10 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type {
+  AttachmentReference,
+  AttachmentStatus,
+  AttachmentReadResult,
+  DoclingRuntimeStatus
+} from '../shared/attachment-document'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
   GroupReportExportRequest,
@@ -125,8 +131,12 @@ import type {
 
 // 渲染器的自定义 API
 const api = {
-  getReportPreferences: (): Promise<import('../shared/report-preferences').ReportPreferences> => ipcRenderer.invoke('report:getPreferences'),
-  saveReportPreferences: (value: Partial<import('../shared/report-preferences').ReportPreferences>): Promise<import('../shared/report-preferences').ReportPreferences> => ipcRenderer.invoke('report:savePreferences', value),
+  getReportPreferences: (): Promise<import('../shared/report-preferences').ReportPreferences> =>
+    ipcRenderer.invoke('report:getPreferences'),
+  saveReportPreferences: (
+    value: Partial<import('../shared/report-preferences').ReportPreferences>
+  ): Promise<import('../shared/report-preferences').ReportPreferences> =>
+    ipcRenderer.invoke('report:savePreferences', value),
   writeAppLog: (entry: AppLogEntry) => ipcRenderer.invoke('app-log:write', entry),
   getAppLogPath: () => ipcRenderer.invoke('app-log:getPath'),
   revealAppLog: () => ipcRenderer.invoke('app-log:reveal'),
@@ -520,6 +530,22 @@ const api = {
   // ============================================================
   // AI 图片理解基础设施(ImageInsightService)
   // ============================================================
+  attachmentRuntimeStatus: (): Promise<DoclingRuntimeStatus> =>
+    ipcRenderer.invoke('attachment:runtime'),
+  attachmentPrepareRuntime: (): Promise<DoclingRuntimeStatus> =>
+    ipcRenderer.invoke('attachment:prepare'),
+  attachmentStatus: (ref: AttachmentReference): Promise<AttachmentStatus> =>
+    ipcRenderer.invoke('attachment:status', ref),
+  attachmentParse: (ref: AttachmentReference): Promise<AttachmentStatus> =>
+    ipcRenderer.invoke('attachment:parse', ref),
+  attachmentCancel: (ref: AttachmentReference): Promise<void> =>
+    ipcRenderer.invoke('attachment:cancel', ref),
+  attachmentRemove: (ref: AttachmentReference): Promise<AttachmentStatus> =>
+    ipcRenderer.invoke('attachment:remove', ref),
+  attachmentReadDocuments: (request: {
+    conversationId: string
+    messageIds: string[]
+  }): Promise<AttachmentReadResult> => ipcRenderer.invoke('attachment:read', request),
   imageListCandidates: (query: ImageCandidateQuery): Promise<ImageCandidateResponse> =>
     ipcRenderer.invoke('image:listCandidates', query),
   imageAnalyze: (request: ImageAnalysisRequest): Promise<ImageAnalysisResponse> =>

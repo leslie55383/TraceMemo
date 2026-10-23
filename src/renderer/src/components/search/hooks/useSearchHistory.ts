@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { canReuseAttachmentSearchCache } from '../../../utils/attachment-index-cache'
 import { aiSearchRangeStart } from '../../../../../shared/ai-search'
 import type { AiSearchTimeRange } from '../../../../../shared/ai-search'
 import {
@@ -219,13 +220,14 @@ export function useSearchHistory({
 
   const readCachedResult = (cacheKey: string): AISearchCacheRecord | null => {
     const exact = readSearchCache(cacheKey)
-    if (exact) return exact
+    if (exact && canReuseAttachmentSearchCache(exact)) return exact
     try {
       const requested = parseSearchCacheKey(cacheKey)
       if (!requested) return null
       const records = JSON.parse(localStorage.getItem(SEARCH_CACHE_KEY) || '[]') as AISearchCacheRecord[]
       return records
         .filter((record) => {
+          if (!canReuseAttachmentSearchCache(record)) return false
           try {
             const raw = JSON.parse(record.key) as unknown[]
             const location = parseSearchCacheKey(record.key)

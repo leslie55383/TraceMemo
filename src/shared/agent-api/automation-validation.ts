@@ -31,6 +31,7 @@ const MESSAGE_TYPES: ScheduledReportMessageType[] = [
   'video',
   'voice',
   'share',
+  'file',
   'system'
 ]
 const MEMBER_NAME_MODES: ScheduledReportMemberNameMode[] = [

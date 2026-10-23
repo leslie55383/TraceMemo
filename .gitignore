@@ -28,3 +28,5 @@ progress.md
 task_plan.md
 
 *tm-wcdb-config-helper*
+__pycache__/
+*.py[cod]

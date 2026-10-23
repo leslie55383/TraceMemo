@@ -719,7 +719,31 @@ declare global {
       // AI 图片理解基础设施(ImageInsightService)
       // ============================================================
       getReportPreferences: () => Promise<import('../shared/report-preferences').ReportPreferences>
-      saveReportPreferences: (value: Partial<import('../shared/report-preferences').ReportPreferences>) => Promise<import('../shared/report-preferences').ReportPreferences>
+      saveReportPreferences: (
+        value: Partial<import('../shared/report-preferences').ReportPreferences>
+      ) => Promise<import('../shared/report-preferences').ReportPreferences>
+      attachmentRuntimeStatus: () => Promise<
+        import('../shared/attachment-document').DoclingRuntimeStatus
+      >
+      attachmentPrepareRuntime: () => Promise<
+        import('../shared/attachment-document').DoclingRuntimeStatus
+      >
+      attachmentStatus: (
+        ref: import('../shared/attachment-document').AttachmentReference
+      ) => Promise<import('../shared/attachment-document').AttachmentStatus>
+      attachmentParse: (
+        ref: import('../shared/attachment-document').AttachmentReference
+      ) => Promise<import('../shared/attachment-document').AttachmentStatus>
+      attachmentCancel: (
+        ref: import('../shared/attachment-document').AttachmentReference
+      ) => Promise<void>
+      attachmentRemove: (
+        ref: import('../shared/attachment-document').AttachmentReference
+      ) => Promise<import('../shared/attachment-document').AttachmentStatus>
+      attachmentReadDocuments: (request: {
+        conversationId: string
+        messageIds: string[]
+      }) => Promise<import('../shared/attachment-document').AttachmentReadResult>
       imageListCandidates: (query: ImageCandidateQuery) => Promise<ImageCandidateResponse>
       imageAnalyze: (request: ImageAnalysisRequest) => Promise<ImageAnalysisResponse>
       getImageInsight: (imageHash: string) => Promise<{ success: boolean; insight?: ImageInsight }>
@@ -763,9 +787,7 @@ declare global {
         ruleId: string
       ) => Promise<{ success: boolean; error?: string; data?: ScheduledRuleRunOutcome }>
       /** 定时日报：旧执行记录**只读存档**（旧记录无法无损转换，原样展示）。 */
-      listScheduledReportLegacyExecutions: (
-        ruleId?: string
-      ) => Promise<ScheduledReportExecution[]>
+      listScheduledReportLegacyExecutions: (ruleId?: string) => Promise<ScheduledReportExecution[]>
       /** 定时日报：微信异常通知开关与能力检测。 */
       getScheduledReportNotificationSettings: () => Promise<ScheduledReportNotificationSettings>
       getScheduledReportNotificationCapability: () => Promise<ScheduledReportNotificationCapability>

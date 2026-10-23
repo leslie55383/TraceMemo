@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { markAttachmentIndexChanged } from '../../../utils/attachment-index-cache'
 import type { CacheSummary, CacheClearScope } from '../../../../../shared/cache'
 import {
   AlertDialog,
@@ -58,6 +59,7 @@ export function CacheCleanupPage({
     setBusyScope(scope)
     try {
       setSummary(await window.api.clearCache(scope))
+      if (scope === 'attachment-text' || scope === 'all') markAttachmentIndexChanged()
       if (scope === 'all') {
         for (const key of SEARCH_CACHE_KEYS) localStorage.removeItem(key)
       }

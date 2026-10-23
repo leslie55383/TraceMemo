@@ -9,11 +9,13 @@ export type { CacheClearScope } from '../../shared/cache'
 const BOOTSTRAP_CACHE_DIR = path.join(app.getPath('userData'), 'cache', 'bootstrap')
 const KNOWLEDGE_CACHE_DIR = path.join(app.getPath('userData'), 'knowledge')
 const IMAGE_TEXT_INDEX_CACHE_DIR = path.join(app.getPath('userData'), 'image-text-index')
+const ATTACHMENT_TEXT_DIR = path.join(app.getPath('userData'), 'attachment-text')
 
 export interface CacheClearOptions {
   beforeClearKnowledge?: () => Promise<void>
   /** 清理图片文字索引前调用：停任务 + 关闭派生库句柄。 */
   beforeClearImageTextIndex?: () => Promise<void>
+  clearAttachmentText?: () => Promise<void>
 }
 
 function inspectDirectory(directory: string): { sizeBytes: number; fileCount: number } {
@@ -52,6 +54,13 @@ export function getCacheSummary(): CacheSummary {
   const imageTextIndex = inspectDirectory(IMAGE_TEXT_INDEX_CACHE_DIR)
   const items: CacheSummaryItem[] = [
     {
+      id: 'attachment-text',
+      label: '附件正文索引',
+      description:
+        '所有账号主动解析的 PDF、Word、Excel 正文。清理后需重新选择文件解析；原附件和 Docling 模型不受影响。',
+      ...inspectDirectory(ATTACHMENT_TEXT_DIR)
+    },
+    {
       id: 'bootstrap',
       label: '启动与聊天缓存',
       description: '联系人、头像、群成员和最近聊天记录的本地副本。',
@@ -89,6 +98,10 @@ export async function clearCache(
   scope: CacheClearScope,
   options: CacheClearOptions = {}
 ): Promise<CacheSummary> {
+  if (scope === 'attachment-text' || scope === 'all') {
+    if (options.clearAttachmentText) await options.clearAttachmentText()
+    else await fs.remove(ATTACHMENT_TEXT_DIR)
+  }
   if (scope === 'bootstrap' || scope === 'all') {
     clearBootstrapCache()
     await fs.remove(BOOTSTRAP_CACHE_DIR)

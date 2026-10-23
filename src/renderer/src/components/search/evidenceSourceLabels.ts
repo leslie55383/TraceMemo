@@ -25,7 +25,8 @@ const MESSAGE_TYPE_LABELS: Record<string, string> = {
 
 const DERIVED_SOURCE_LABELS: Record<KnowledgeDerivedSource, string> = {
   image_ocr: 'OCR命中',
-  voice_transcript: '转写命中'
+  voice_transcript: '转写命中',
+  attachment_text: '附件正文命中'
 }
 
 /**
@@ -36,7 +37,8 @@ const DERIVED_SOURCE_LABELS: Record<KnowledgeDerivedSource, string> = {
  */
 const DERIVED_SNIPPET_PREFIXES: Record<KnowledgeDerivedSource, string> = {
   image_ocr: 'OCR摘录：',
-  voice_transcript: '转写摘录：'
+  voice_transcript: '转写摘录：',
+  attachment_text: '附件摘录：'
 }
 
 export interface EvidenceSourceBadge {

@@ -240,7 +240,7 @@ export interface KnowledgeEvidence {
  * 不必给每个消费方再添一个布尔字段。UI 侧的展示文案集中在
  * `renderer/src/components/search/evidenceSourceLabels.ts`，不在这里。
  */
-export type KnowledgeDerivedSource = 'image_ocr' | 'voice_transcript'
+export type KnowledgeDerivedSource = 'image_ocr' | 'voice_transcript' | 'attachment_text'
 
 /**
  * 证据文本面向用户 / 模型时的可读化处理。

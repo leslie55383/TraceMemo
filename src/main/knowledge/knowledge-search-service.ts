@@ -460,7 +460,45 @@ export class KnowledgeSearchService {
     if (this.pendingVoiceIndexes.size) this.scheduleVoiceIndexFlush()
   }
 
+  private attachmentSearch?: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeEvidence[]>
+
+  setAttachmentSearchResolver(
+    resolver: (request: KnowledgeSearchIpcRequest) => Promise<KnowledgeEvidence[]>
+  ): void {
+    this.attachmentSearch = resolver
+  }
+
   async search(request: KnowledgeSearchIpcRequest): Promise<KnowledgeSearchIpcResult> {
+    const account = this.currentAccountId()
+    const [result, attachments] = await Promise.all([
+      this.searchMessages(request),
+      account && this.attachmentSearch && !request.conversationBoundary
+        ? this.attachmentSearch(request)
+        : Promise.resolve([])
+    ])
+    if (account !== this.currentAccountId()) throw new Error('微信账号已切换，请重新搜索')
+    if (!attachments.length) return result
+    // Keep the full matching attachment excerpt together: downstream citations identify messages.
+    const grouped = new Map<string, KnowledgeEvidence>()
+    for (const item of attachments) {
+      const key = JSON.stringify([item.conversationId, item.messageId])
+      const previous = grouped.get(key)
+      if (previous) previous.text += '\n\n' + item.text
+      else grouped.set(key, { ...item })
+    }
+    const keys = new Set(grouped.keys())
+    const evidence = [
+      ...grouped.values(),
+      ...result.evidence.filter(
+        (item) => !keys.has(JSON.stringify([item.conversationId, item.messageId]))
+      )
+    ].slice(0, Math.max(1, Math.min(request.limit || FALLBACK_LIMIT, FALLBACK_LIMIT)))
+    return { ...result, evidence }
+  }
+
+  private async searchMessages(
+    request: KnowledgeSearchIpcRequest
+  ): Promise<KnowledgeSearchIpcResult> {
     // 源数据最新活跃时间与索引状态无关，先取一次（零额外 WCDB 调用：读的是已缓存的 Session 列表）。
     const sourceLatestAt = this.sourceLatestAt()
     const accountId = this.currentAccountId()

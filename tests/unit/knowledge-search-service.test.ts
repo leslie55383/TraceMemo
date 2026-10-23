@@ -77,6 +77,23 @@ import { KnowledgeSearchService } from '../../src/main/knowledge/knowledge-searc
 import type { VoiceTranscriptUpdate } from '../../src/shared/voice-recognition'
 
 describe('KnowledgeSearchService legacy fallback', () => {
+  it('merges matching attachment parts under their original message without inflating chat counts', async () => {
+    chatState.ready = true
+    chatState.accountId = 'fixture-account'
+    const service = new KnowledgeSearchService('/tmp/fixture-attachments', '/missing-worker.js')
+    const base = { chunkId: 'file:1', conversationId: 'fixture-conversation', messageId: 'local:7',
+      startTime: 1, endTime: 1, timestamp: 1, messageIds: ['local:7'], sender: '成员', sourceKind: 'file' as const, derivedSource: 'attachment_text' as const }
+    const resolve = vi.fn(async () => [{ ...base, text: '附件《计划.xlsx》·预算：24680' }, { ...base, chunkId: 'file:2', text: '附件《计划.xlsx》·排期：十一月' }])
+    service.setAttachmentSearchResolver(resolve)
+    const result = await service.search({ text: '附件', terms: ['附件'] })
+    const file = result.evidence.find(item => item.derivedSource === 'attachment_text')
+    expect(file?.text).toContain('24680')
+    expect(file?.text).toContain('十一月')
+    expect(result.totalMessages).toBe(1)
+    await service.search({ text: '', terms: [], conversationBoundary: 'first' })
+    expect(resolve).toHaveBeenCalledTimes(1)
+    await service.dispose()
+  })
   beforeEach(() => {
     chatState.ready = false
     chatState.accountId = ''

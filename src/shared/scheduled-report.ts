@@ -7,6 +7,7 @@ export type ScheduledReportMessageType =
   | 'sticker'
   | 'video'
   | 'voice'
+  | 'file'
   | 'share'
   | 'system'
 export type ScheduledReportMemberNameMode = 'groupNickname' | 'wechatNickname' | 'remark'

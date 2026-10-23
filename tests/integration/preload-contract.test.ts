@@ -24,6 +24,18 @@ async function loadApi(): Promise<typeof window.api> {
 }
 
 describe('preload IPC contract', () => {
+  it('exposes attachment operations without accepting a renderer-selected path', async () => {
+    const api = await loadApi()
+    const ref = { conversationId: 'fixture-group', messageId: 'local:7', createTime: 100 }
+    await api.attachmentRuntimeStatus(); expect(invoke).toHaveBeenLastCalledWith('attachment:runtime')
+    await api.attachmentPrepareRuntime(); expect(invoke).toHaveBeenLastCalledWith('attachment:prepare')
+    await api.attachmentParse(ref); expect(invoke).toHaveBeenLastCalledWith('attachment:parse', ref)
+    await api.attachmentStatus(ref); expect(invoke).toHaveBeenLastCalledWith('attachment:status', ref)
+    await api.attachmentCancel(ref); expect(invoke).toHaveBeenLastCalledWith('attachment:cancel', ref)
+    await api.attachmentRemove(ref); expect(invoke).toHaveBeenLastCalledWith('attachment:remove', ref)
+    const request = { conversationId: 'fixture-group', messageIds: ['local:7'] }
+    await api.attachmentReadDocuments(request); expect(invoke).toHaveBeenLastCalledWith('attachment:read', request)
+  })
   beforeEach(() => {
     invoke.mockReset()
     on.mockReset()

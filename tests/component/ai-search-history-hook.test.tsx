@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
+import { markAttachmentIndexChanged } from '../../src/renderer/src/utils/attachment-index-cache'
 import { useSearchHistory } from '../../src/renderer/src/components/search/hooks/useSearchHistory'
 import type { AiSearchTimeRange } from '../../src/shared/ai-search'
 import type {
@@ -102,6 +103,24 @@ beforeEach(() => {
 })
 
 describe('useSearchHistory', () => {
+  it('re-queries after attachment mutations without deleting historical answers', () => {
+    const cached = makeCacheRecord({ query: '附件预算', answer: '原来的历史答案' }) as AISearchCacheRecord
+    localStorage.setItem(SEARCH_CACHE_KEY, JSON.stringify([cached]))
+    const { result } = renderHook(() => useHistoryHarness())
+    expect(result.current.readCachedResult(cached.key)).toEqual(cached)
+    markAttachmentIndexChanged()
+    expect(result.current.readCachedResult(cached.key)).toBeNull()
+    expect(readCacheRecords()).toEqual([cached])
+    act(() => result.current.applyCachedResult(cached))
+    expect(result.current.state.answer).toBe('原来的历史答案')
+  })
+  it('checks attachment-backed answers again so moved or modified files cannot be reused from query cache', () => {
+    const cached = makeCacheRecord({ query: '附件预算', evidence: [makePipelineEvidence(1)] }) as AISearchCacheRecord
+    cached.evidence[0].derivedSource = 'attachment_text'
+    localStorage.setItem(SEARCH_CACHE_KEY, JSON.stringify([cached]))
+    const { result } = renderHook(() => useHistoryHarness())
+    expect(result.current.readCachedResult(cached.key)).toBeNull()
+  })
   it('loads and filters the persisted history list', () => {
     localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(['问题 A', 42, null, '问题 B']))
 

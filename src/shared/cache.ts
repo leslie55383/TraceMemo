@@ -3,10 +3,11 @@ export type CacheClearScope =
   | 'electron'
   | 'knowledge'
   | 'image-text-index'
+  | 'attachment-text'
   | 'all'
 
 export interface CacheSummaryItem {
-  id: 'bootstrap' | 'electron' | 'knowledge' | 'image-text-index'
+  id: 'bootstrap' | 'electron' | 'knowledge' | 'image-text-index' | 'attachment-text'
   label: string
   description: string
   sizeBytes: number

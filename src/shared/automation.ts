@@ -281,6 +281,7 @@ export const SCHEDULED_REPORT_ALL_MESSAGE_TYPES: ScheduledReportMessageType[] = 
   'video',
   'voice',
   'share',
+  'file',
   'system'
 ]
 

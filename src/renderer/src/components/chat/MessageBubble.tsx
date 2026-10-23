@@ -1,4 +1,5 @@
 import React from 'react'
+import { AttachmentDocumentPanel } from './AttachmentDocumentPanel'
 import { Contact, Message } from '../../../../shared/types'
 import { ImageBubble } from '../ImageBubble'
 import { RichMessageBubble } from '../RichMessageBubble'
@@ -97,6 +98,7 @@ export function MessageBubble({
           <div className="message-text">{renderWechatEmojiText(message.content)}</div>
         )}
       </div>
+      <AttachmentDocumentPanel message={message} contact={contact} />
       {message.recalled && (
         <span className="message-recalled-status" title={message.recalledBy || undefined}>
           消息已撤回
