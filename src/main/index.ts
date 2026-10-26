@@ -1160,6 +1160,7 @@ app.whenReady().then(async () => {
   localQueryApiService.setImageOcrEntryProvider((conversationId, messageId) =>
     imageTextIndexService.getConversationOcr(conversationId).get(messageId)
   )
+  localQueryApiService.setAttachmentExcerptReader(request => attachmentDocuments.readExcerpts(request))
   /**
    * 语音转写：读消息时只读缓存快照；只有 query/voice-transcribe 会真正排队识别，
    * 识别仍走同一个 VoiceRecognitionUseCase（同一份缓存、同一条串行队列）。

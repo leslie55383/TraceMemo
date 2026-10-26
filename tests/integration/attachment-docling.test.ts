@@ -52,7 +52,13 @@ describe.skipIf(!process.env.TM_DOCLING_PYTHON)(
         ).toMatchObject({ derivedSource: 'attachment_text', messageId: 'local:7' })
         const read = await service.read(source.conversationId, ['local:7'])
         expect(read.documents[0].parts.map((p) => p.text).join('')).toContain('24680')
+        const excerptRequest = { conversationId: source.conversationId, references: [{ messageId: source.messageId, createTime: 100 }] }
+        const excerpts = await service.readExcerpts(excerptRequest)
+        expect(excerpts.documents[0].parts.map(p => p.text).join('')).toContain('24680')
+        expect(excerpts.documents[0].coverage.truncated).toBe(false)
+        expect((await service.readExcerpts({ ...excerptRequest, references: [{ messageId: source.messageId, createTime: 101 }] })).documents).toEqual([])
         account = 'synthetic-account-b'
+        expect((await service.readExcerpts(excerptRequest)).documents).toEqual([])
         expect((await service.search({ text: '预算', terms: ['预算'] })).evidence).toEqual([])
         account = 'synthetic-account-a'
         expect((await service.remove(source)).state).toBe('unparsed')

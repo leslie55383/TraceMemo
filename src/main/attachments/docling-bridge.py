@@ -187,6 +187,39 @@ def main(request):
             if sum(len(part["text"]) for doc in docs for part in doc["parts"]) > MAX_CHARACTERS:
                 raise ValueError("所选附件正文合计超过 100 万字符，请缩小日报范围")
             return {"documents": docs}
+        if op == "readExcerpts":
+            references = request.get("references", [])
+            if not isinstance(references, list) or len(references) > 200:
+                raise ValueError("一次最多读取 200 条附件消息")
+            docs, seen, remaining = [], set(), 24_000
+            for ref in references:
+                message_id = ref["messageId"]
+                if message_id in seen:
+                    continue
+                seen.add(message_id)
+                row = db.execute("SELECT * FROM documents WHERE conversation_id=? AND message_id=?",
+                    (request["conversationId"], message_id)).fetchone()
+                if not row or not fresh(row):
+                    continue
+                source = json.loads(row["source_json"])
+                # Local message ids may be reused after rebuilding a source database.
+                if source["createTime"] != ref["createTime"]:
+                    continue
+                total = db.execute("SELECT coalesce(sum(length(text)),0) FROM parts WHERE document_id=?", (row["id"],)).fetchone()[0]
+                budget = min(6_000, remaining)
+                parts, included = [], 0
+                if budget:
+                    for part in db.execute("SELECT location, text FROM parts WHERE document_id=? ORDER BY rowid", (row["id"],)):
+                        text = part["text"][:budget - included]
+                        if text:
+                            parts.append({"location": part["location"], "text": text})
+                            included += len(text)
+                        if included >= budget:
+                            break
+                remaining -= included
+                docs.append({"source": source, "parts": parts, "parsedAt": row["parsed_at"], "engine": row["engine"],
+                    "coverage": {"totalCharacters": total, "includedCharacters": included, "truncated": included < total}})
+            return {"documents": docs}
         if op == "search":
             terms = [str(t).strip()[:100] for t in request.get("terms", [])[:12] if str(t).strip()]
             if not terms:

@@ -5,6 +5,8 @@ import { homedir } from 'os'
 import type { KnowledgeSearchIpcRequest } from '../../shared/knowledge'
 import type {
   AttachmentDocument,
+  AttachmentExcerptRequest,
+  AttachmentExcerptResult,
   AttachmentReference,
   AttachmentSource,
   AttachmentStatus,
@@ -305,5 +307,10 @@ export class AttachmentDocumentService {
     if (!existsSync(this.python) || !messageIds.length) return { documents: [] }
     if (messageIds.length > 300) throw new Error('所选范围超过 300 条附件消息，请缩小范围')
     return this.run('read', { conversationId, messageIds }, this.account())
+  }
+  async readExcerpts(request: AttachmentExcerptRequest): Promise<AttachmentExcerptResult> {
+    if (!existsSync(this.python) || !request.references.length) return { documents: [] }
+    if (request.references.length > 200) throw new Error('一次最多读取 200 条附件消息')
+    return this.run('readExcerpts', request, this.account())
   }
 }

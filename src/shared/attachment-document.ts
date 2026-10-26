@@ -45,3 +45,17 @@ export interface AttachmentSearchResult {
 export interface AttachmentReadResult {
   documents: AttachmentDocument[]
 }
+
+/** Query excerpts have a separate budget; report reads keep their complete-document contract. */
+export interface AttachmentExcerptCoverage {
+  totalCharacters: number
+  includedCharacters: number
+  truncated: boolean
+}
+export interface AttachmentExcerptRequest {
+  conversationId: string
+  references: Array<Pick<AttachmentReference, 'messageId' | 'createTime'>>
+}
+export interface AttachmentExcerptResult {
+  documents: Array<AttachmentDocument & { coverage: AttachmentExcerptCoverage }>
+}

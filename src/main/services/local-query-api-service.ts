@@ -48,6 +48,7 @@ import {
   type ImageTextIndexCoverage
 } from '../../shared/image-text-index'
 import { toEvidenceDisplayText } from '../../shared/knowledge'
+import { enrichAttachmentMessages, type AttachmentExcerptReader } from '../attachments/attachment-query-reader'
 
 const LIMIT_MAX = 200
 const CONTEXT_MAX = 50
@@ -277,7 +278,7 @@ function toQueryMessage(
   const voiceFields = kind === 'voice' && voice
     ? { voiceTranscriptState: voice.state, ...(voiceText ? { voiceTranscript: voiceText, derivedSource: 'voice_transcript' as const } : {}) }
     : {}
-  return { messageRef: toRef(conversationId, message.id), timestamp: (message.createTime || 0) * 1000, datetime: message.datetime, sender: message.isSender ? '我' : (message.name || target.m_nsNickName), direction: message.isSender ? 'to_target' : 'from_target', messageType: kind, sourceKind: kind, ...(attachment ? { attachment } : {}), ...(text ? { text } : {}), ...(ocrText ? { imageOcrText: ocrText, derivedSource: 'image_ocr' as const } : {}), ...(kind === 'image' ? { imageTextState } : {}), ...voiceFields }
+  return { messageRef: toRef(conversationId, sourceMessageId(message)), timestamp: (message.createTime || 0) * 1000, datetime: message.datetime, sender: message.isSender ? '我' : (message.name || target.m_nsNickName), direction: message.isSender ? 'to_target' : 'from_target', messageType: kind, sourceKind: kind, ...(attachment ? { attachment } : {}), ...(text ? { text } : {}), ...(ocrText ? { imageOcrText: ocrText, derivedSource: 'image_ocr' as const } : {}), ...(kind === 'image' ? { imageTextState } : {}), ...voiceFields }
 }
 
 /**
@@ -369,6 +370,10 @@ function invalidVoiceTranscribeArguments(field: string, constraint: string, hint
 }
 
 export class LocalQueryApiService {
+  private attachmentReader?: AttachmentExcerptReader
+  setAttachmentExcerptReader(reader: AttachmentExcerptReader): void {
+    this.attachmentReader = reader
+  }
   /**
    * 图片文字索引覆盖度提供者（同步、只读）。
    *
@@ -496,13 +501,13 @@ export class LocalQueryApiService {
     // 图片 OCR 派生文本：L4 只读 L1，**不触发 OCR / 解密 / 读原图**。
     // 键必须用 `sourceMessageId(message)`（binding 主键就是它），不能用裸 `message.id`，
     // 否则 `local:` 前缀会让查表静默失配 —— 与 Knowledge 用同一条身份规则。
-    const messages = filtered.map((message) => {
+    const messages = await enrichAttachmentMessages(contact.md5, filtered, filtered.map((message) => {
       const ocr =
         kindOf(message) === 'image'
           ? this.imageOcrEntry?.(contact.md5, sourceMessageId(message))
           : undefined
       return toQueryMessage(contact.md5, message, contact, ocr, this.voiceSnapshot(message))
-    })
+    }), this.attachmentReader)
     const imageOcrCoverage = buildImageOcrCoverage(this.imageTextCoverage())
     return { status: 'completed' as const, target: contactView(contact), query: { direction, messageTypes: request.messageTypes || [], order: request.order || 'asc', limit: Math.min(LIMIT_MAX, Math.max(1, request.limit || 20)), excludeSystem: request.excludeSystem !== false, resolvedTimeRange: range }, coverage: { state: 'complete' as const }, returnedCount: filtered.length, messages, scope: corpus.scope, ...(imageOcrCoverage ? { imageOcrCoverage } : {}) }
   }
@@ -696,7 +701,7 @@ export class LocalQueryApiService {
       )
       // key 必须与索引路径一致（`会话:归一化消息 id`）：两条路径可能命中同一条消息，
       // 合并时要能去重。`message.id` 可能带 `local:` 装饰，所以走归一化。
-      const normalizedId = normalizeMessageIdentity(input.conversationId, message.id)?.messageId
+      const normalizedId = normalizeMessageIdentity(input.conversationId, sourceMessageId(message))?.messageId
       if (!normalizedId) continue
       evidence.set(`${input.conversationId}:${normalizedId}`, {
         messageRef: item.messageRef,
@@ -884,9 +889,14 @@ export class LocalQueryApiService {
         return outsideScopeError(corpus.scope, '其他会话的消息') as { status: string }
       }
     }
-    const before = Math.min(CONTEXT_MAX, Math.max(0, request.before ?? 10)); const after = Math.min(CONTEXT_MAX, Math.max(0, request.after ?? 10)); const messages = await listMessagesAsync(ref.conversationId); const index = messages.findIndex((message) => normalizeMessageIdentity(ref.conversationId, message.id)?.messageId === ref.messageId); if (index < 0) return { status: 'contact_not_found' as const }
+    const before = Math.min(CONTEXT_MAX, Math.max(0, request.before ?? 10)); const after = Math.min(CONTEXT_MAX, Math.max(0, request.after ?? 10)); const messages = await listMessagesAsync(ref.conversationId); const index = messages.findIndex((message) => (normalizeMessageIdentity(ref.conversationId, sourceMessageId(message))?.messageId === ref.messageId || normalizeMessageIdentity(ref.conversationId, message.id)?.messageId === ref.messageId)); if (index < 0) return { status: 'contact_not_found' as const }
     const contact = (await listContactsAsync()).find((item) => item.md5 === ref.conversationId); if (!contact) return { status: 'contact_not_found' as const }; const map = (message: FormattedMessage) => toQueryMessage(ref.conversationId, message, contact, undefined, this.voiceSnapshot(message))
-    return { status: 'completed' as const, anchor: map(messages[index]), before: messages.slice(Math.max(0, index - before), index).map(map), after: messages.slice(index + 1, index + 1 + after).map(map) }
+    // Give the anchor the first share of the excerpt budget, then its context.
+    const preceding = messages.slice(Math.max(0, index - before), index)
+    const following = messages.slice(index + 1, index + 1 + after)
+    const selected = [messages[index], ...preceding, ...following]
+    const enriched = await enrichAttachmentMessages(ref.conversationId, selected, selected.map(map), this.attachmentReader)
+    return { status: 'completed' as const, anchor: enriched[0], before: enriched.slice(1, preceding.length + 1), after: enriched.slice(preceding.length + 1) }
   }
   /**
    * 把指定语音消息转成文字。
@@ -1018,6 +1028,20 @@ export class LocalQueryApiService {
     const messages = raw.length > OVERVIEW_SOURCE_CAP ? raw.slice(-OVERVIEW_SOURCE_CAP) : raw
     const truncated = raw.length > OVERVIEW_SOURCE_CAP
     const evidence = selectTemporalCoverageEvidence(contact, messages, OVERVIEW_EVIDENCE_TARGET)
+    const sourceByRef = new Map(messages.map(message => [toRef(contact.md5, sourceMessageId(message)), message]))
+    const selected = evidence.map(item => sourceByRef.get(item.messageRef)!)
+    const enriched = await enrichAttachmentMessages(contact.md5, selected,
+      selected.map(message => toQueryMessage(contact.md5, message, contact)), this.attachmentReader)
+    for (let i = 0; i < evidence.length; i++) {
+      const item = enriched[i]
+      if (item.attachmentTextState) {
+        evidence[i] = { ...evidence[i], attachmentTextState: item.attachmentTextState,
+          ...(item.attachmentTextCoverage ? { attachmentTextCoverage: item.attachmentTextCoverage } : {}) }
+      }
+      if (item.attachmentText) {
+        evidence[i] = { ...evidence[i], text: [evidence[i].text, item.attachmentText].join('\n'), derivedSource: 'attachment_text' }
+      }
+    }
     const state: 'complete' | 'partial' = truncated ? 'partial' : 'complete'
     const imageOcrCoverage = buildImageOcrCoverage(this.imageTextCoverage())
     return {

@@ -64,9 +64,9 @@ const temporalBasisSchema = {
  * 也拿不到它的实现细节。`query_messages` 仍是单会话结构化查询。
  */
 export const LOCAL_QUERY_TOOL_DEFINITIONS: LocalQueryToolDefinition[] = [
-  { name: 'query_messages', description: '精确读取**单个**会话中符合联系人、时间、方向、消息类型、顺序等结构条件的消息；适合具体事实和 earliest/latest 等时间边界查询，边界查询使用 order 与 limit。省略 target 表示"当前搜索范围恰好只有一个会话"（例如单聊专属或当前会话）时直接查该会话；范围里有多个会话时必须显式指定 target，且 target 必须落在当前搜索范围内。每次调用都必须声明 temporalBasis，说明这个时间范围来自用户的明确约束、模糊回忆线索，还是用户根本没给时间信息。跨多个会话的"谁聊过某话题"请改用 search_messages。', parameters: { type: 'object', required: ['timeRange', 'temporalBasis'], additionalProperties: false, properties: { target: targetSchema, timeRange: timeRangeSchema, temporalBasis: temporalBasisSchema, direction: { enum: ['any', 'from_target', 'to_target'] }, messageTypes: { type: 'array', items: { enum: ['text', 'image', 'voice', 'video', 'file', 'link', 'sticker', 'system', 'other'] } }, order: { enum: ['asc', 'desc'] }, limit: { type: 'integer', minimum: 1, maximum: 200 }, excludeSystem: { type: 'boolean' } } } },
+  { name: 'query_messages', description: '精确读取**单个**会话中符合联系人、时间、方向、消息类型、顺序等结构条件的消息；适合具体事实和 earliest/latest 等时间边界查询，边界查询使用 order 与 limit。省略 target 表示"当前搜索范围恰好只有一个会话"（例如单聊专属或当前会话）时直接查该会话；范围里有多个会话时必须显式指定 target，且 target 必须落在当前搜索范围内。每次调用都必须声明 temporalBasis，说明这个时间范围来自用户的明确约束、模糊回忆线索，还是用户根本没给时间信息。跨多个会话的"谁聊过某话题"请改用 search_messages。支持的文件消息会附带已在本地解析且仍有效的正文节选，正文覆盖状态与聊天记录覆盖分开返回。', parameters: { type: 'object', required: ['timeRange', 'temporalBasis'], additionalProperties: false, properties: { target: targetSchema, timeRange: timeRangeSchema, temporalBasis: temporalBasisSchema, direction: { enum: ['any', 'from_target', 'to_target'] }, messageTypes: { type: 'array', items: { enum: ['text', 'image', 'voice', 'video', 'file', 'link', 'sticker', 'system', 'other'] } }, order: { enum: ['asc', 'desc'] }, limit: { type: 'integer', minimum: 1, maximum: 200 }, excludeSystem: { type: 'boolean' } } } },
   { name: 'search_messages', description: '在应用当前的搜索范围内做关键词检索并返回相关 Evidence。queries 的每一项都是一次独立的字面检索：一项只放一个简短关键词，不要把多个近义词或整句话放进同一项，也不要指望一项内部被拆词理解。首次最多 4 项；只有在本次检索完全没有 Evidence 时，才允许再检索一次，且每一项都必须与上一次实质不同。省略 target 表示在整个当前搜索范围（可能是多个会话，例如所有群聊）内检索——问"最近谁聊过某个话题"这类跨会话问题时应当省略 target；只有当问题明确指向某一个会话时才传 target，且该 target 必须在当前搜索范围内。', parameters: { type: 'object', required: ['timeRange', 'queries'], additionalProperties: false, properties: { target: targetSchema, timeRange: timeRangeSchema, queries: { type: 'array', description: '独立检索项列表，每项一个简短关键词，最多 4 项；每一项单独检索，不会组合成一句话理解。', minItems: 1, maxItems: 4, items: { type: 'string', minLength: 1 } }, limit: { type: 'integer', minimum: 1, maximum: 200 } } } },
-  { name: 'message_context', description: '补充已找到的单条有价值 Evidence 的前后消息；仅在该 Evidence 缺少语境、无法判断含义时使用，不是默认确认步骤。', parameters: { type: 'object', required: ['messageRef'], additionalProperties: false, properties: { messageRef: { type: 'string', minLength: 1 }, before: { type: 'integer', minimum: 0, maximum: 50 }, after: { type: 'integer', minimum: 0, maximum: 50 } } } },
+  { name: 'message_context', description: '补充已找到的单条有价值 Evidence 的前后消息；仅在该 Evidence 缺少语境、无法判断含义时使用，不是默认确认步骤。原消息为已解析附件时，同时返回正文节选。', parameters: { type: 'object', required: ['messageRef'], additionalProperties: false, properties: { messageRef: { type: 'string', minLength: 1 }, before: { type: 'integer', minimum: 0, maximum: 50 }, after: { type: 'integer', minimum: 0, maximum: 50 } } } },
   { name: 'conversation_overview', description: '提取**单个**会话在一段时间内的整体聊天覆盖样本；只用于 broad summary，不是语义搜索 fallback，也不能确定 earliest/latest 等精确时间边界。省略 target 只在当前搜索范围恰好只有一个会话时成立（例如"当前会话"）；范围里有多个会话时必须显式指定 target，且目标必须落在该范围内。', parameters: { type: 'object', required: ['timeRange'], additionalProperties: false, properties: { target: targetSchema, timeRange: timeRangeSchema } } }
 ]
 export type QueryTimeRange =
@@ -109,6 +109,8 @@ export interface ResolvedCorpusScope {
  */
 export interface QueryEvidenceItem
   extends Pick<KnowledgeEvidence, 'timestamp' | 'sender' | 'sourceKind' | 'text'> {
+  attachmentTextState?: QueryMessage['attachmentTextState']
+  attachmentTextCoverage?: QueryMessage['attachmentTextCoverage']
   messageRef: string
   /** 该证据所属会话的展示名（群名 / 联系人名）。 */
   conversationName?: string
@@ -219,6 +221,10 @@ export interface QueryMessagesRequest {
   scope?: QueryCorpusScope
 }
 export interface QueryMessage {
+  /** Local attachment-derived content, separate from the original chat message text. */
+  attachmentText?: string
+  attachmentTextState?: 'indexed' | 'not_available' | 'unsupported' | 'budget_exceeded'
+  attachmentTextCoverage?: import('./attachment-document').AttachmentExcerptCoverage
   messageRef: string
   timestamp: number
   datetime: string

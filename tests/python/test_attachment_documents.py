@@ -86,6 +86,35 @@ class AttachmentIndexTests(unittest.TestCase):
         self.assertEqual({hit["messageId"] for hit in hits}, {"local:7", "local:8"})
         self.assertLessEqual(sum(hit["messageId"] == "local:7" for hit in hits), 3)
 
+    def test_query_excerpts_bound_large_reads_and_keep_report_contract(self):
+        refs = []
+        for number in range(5):
+            source = {**self.source, "messageId": f"local:{number}"}
+            self.index(source=source, text="正文预算📎" * 50_000)
+            refs.append(dict(messageId=source["messageId"], createTime=100))
+        result = self.call("readExcerpts", conversationId="group-a", references=refs)["documents"]
+        self.assertEqual(len(result), 5)
+        self.assertEqual(sum(doc["coverage"]["includedCharacters"] for doc in result), 24000)
+        self.assertEqual(result[0]["coverage"], dict(totalCharacters=250000, includedCharacters=6000, truncated=True))
+        self.assertEqual(result[4]["parts"], [])
+        self.assertTrue(result[4]["coverage"]["truncated"])
+        with self.assertRaisesRegex(ValueError, "100 万"):
+            self.call("read", conversationId="group-a", messageIds=[r["messageId"] for r in refs])
+
+    def test_query_excerpts_validate_source_time_scope_account_and_freshness(self):
+        self.index()
+        reference = dict(messageId="local:7", createTime=100)
+        result = self.call("readExcerpts", conversationId="group-a", references=[reference, reference])["documents"]
+        self.assertEqual(len(result), 1)
+        self.assertFalse(result[0]["coverage"]["truncated"])
+        self.assertEqual(result[0]["parts"][0]["location"], "第 1 页")
+        for conversation, ref in (("other", reference), ("group-a", {**reference, "createTime": 101})):
+            self.assertEqual(self.call("readExcerpts", conversationId=conversation, references=[ref])["documents"], [])
+        other = dict(root=str(self.root), accountId="other-account", op="readExcerpts", conversationId="group-a", references=[reference])
+        self.assertEqual(bridge.main(other)["documents"], [])
+        self.file.write_bytes(self.file.read_bytes() + b"\nchanged")
+        self.assertEqual(self.call("readExcerpts", conversationId="group-a", references=[reference])["documents"], [])
+
     def test_scoping_happens_before_candidate_limit(self):
         db = bridge.connect(dict(root=str(self.root), accountId="test-account"))
         with db:
